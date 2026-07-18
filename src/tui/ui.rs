@@ -140,7 +140,18 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
     .style(Style::default().fg(palette.fg).add_modifier(Modifier::BOLD));
     f.render_widget(title, chunks[0]);
 
-    let content_chunks = vec![chunks[1]];
+    let content_chunks = if app.layout_preset.is_full_list() {
+        vec![chunks[1]]
+    } else {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(60),
+                Constraint::Percentage(40),
+            ])
+            .split(chunks[1])
+            .to_vec()
+    };
 
     let col_email_text = if app.sort_mode == SortMode::Email {
         format!("Email {}", if app.sort_desc { "▼" } else { "▲" })
