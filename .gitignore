@@ -1,5 +1,5 @@
 # Rust build output
-tui/target/
+target/
 
 # Local cache and credentials history (should not be checked in)
 cli_cache.json

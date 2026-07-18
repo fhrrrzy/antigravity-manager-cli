@@ -45,8 +45,8 @@ pkg update && pkg install git rust clang -y
 # Clone the repository
 git clone git@github.com:fhrrrzy/antigravity-manager-cli.git ~/antigravity-manager-cli
 
-# Navigate to the TUI project folder
-cd ~/antigravity-manager-cli/tui
+# Navigate to the project folder
+cd ~/antigravity-manager-cli
 
 # Build the optimized release binary
 cargo build --release
@@ -57,10 +57,10 @@ Create a symlink to run the tool easily as `agm` from any directory:
 
 ```bash
 # On Desktop Linux
-sudo ln -sf ~/antigravity-manager-cli/tui/target/release/antigravity-tui /usr/local/bin/agm
+sudo ln -sf ~/antigravity-manager-cli/target/release/antigravity-tui /usr/local/bin/agm
 
 # On Android Termux
-ln -sf ~/antigravity-manager-cli/tui/target/release/antigravity-tui /data/data/com.termux/files/usr/bin/agm
+ln -sf ~/antigravity-manager-cli/target/release/antigravity-tui /data/data/com.termux/files/usr/bin/agm
 ```
 
 ---
