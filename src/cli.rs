@@ -142,16 +142,103 @@ pub fn cli_list(accounts: &[Account], active_email: Option<&str>, source: &str, 
         println!("No accounts configured. Check backup file.");
         return;
     }
+    
     println!("\nAccounts List (Source: {}):", source);
-    println!("=============================================================");
-    println!("{:<3} | {:<6} | {:<32} | {:<20}", "#", "Active", "Email", "Name");
-    println!("-------------------------------------------------------------");
+    println!("┌───┬────────┬────────────────────────────┬────────┬─────────────┬─────────────┬──────────────────┐");
+    println!("│ # │ Status │ Email                      │  Plan  │ Gemini(5h/Wk)│ Claude(5h/Wk)│ Health Status    │");
+    println!("├───┼────────┼────────────────────────────┼────────┼─────────────┼─────────────┼──────────────────┤");
+
     for (idx, acc) in accounts.iter().enumerate() {
         let is_active = active_email == Some(&acc.email);
-        let active_mark = if is_active { "★" } else { " " };
-        println!("{:<3} | {:<6} | {:<32} | {:<20}", idx + 1, active_mark, acc.email, acc.name);
+        let quota = cache.quotas.get(&acc.email);
+        
+        let gemini_5h = quota.and_then(|q| {
+            q.models.iter()
+                .find(|m| m.name.contains("gemini") || m.display_name.as_ref().map(|n| n.contains("Gemini")).unwrap_or(false))
+                .map(|m| m.percentage)
+        });
+        
+        let claude_5h = quota.and_then(|q| {
+            q.models.iter()
+                .find(|m| m.name.contains("claude") || m.display_name.as_ref().map(|n| n.contains("Claude")).unwrap_or(false))
+                .map(|m| m.percentage)
+        });
+
+        let get_weekly = |is_claude: bool| -> Option<i32> {
+            let q = quota?;
+            let groups = q.quota_groups.as_ref()?;
+            for group in groups {
+                let gp_name = group.display_name.to_lowercase();
+                let target_match = if is_claude {
+                    gp_name.contains("claude") || gp_name.contains("anthropic")
+                } else {
+                    gp_name.contains("gemini") || gp_name.contains("google")
+                };
+                
+                for bucket in &group.buckets {
+                    let b_id = bucket.bucket_id.to_lowercase();
+                    let b_disp = bucket.display_name.as_ref().map(|s| s.to_lowercase()).unwrap_or_default();
+                    let is_weekly = bucket.window == "weekly" || b_id.contains("weekly") || b_disp.contains("weekly");
+                    
+                    let name_match = target_match 
+                        || (is_claude && (b_id.contains("claude") || b_disp.contains("claude")))
+                        || (!is_claude && (b_id.contains("gemini") || b_disp.contains("gemini")));
+                        
+                    if is_weekly && name_match {
+                        return Some((bucket.remaining_fraction * 100.0).round() as i32);
+                    }
+                }
+            }
+            None
+        };
+
+        let gemini_wk = get_weekly(false);
+        let claude_wk = get_weekly(true);
+
+        let gemini_str = match (gemini_5h, gemini_wk) {
+            (Some(h5), Some(wk)) => format!("{:>3}%/{:>3}%", h5, wk),
+            (Some(h5), None) => format!("{:>3}%/N/A", h5),
+            (None, Some(wk)) => format!("N/A/{:>3}%", wk),
+            (None, None) => "N/A".to_string(),
+        };
+
+        let claude_str = match (claude_5h, claude_wk) {
+            (Some(h5), Some(wk)) => format!("{:>3}%/{:>3}%", h5, wk),
+            (Some(h5), None) => format!("{:>3}%/N/A", h5),
+            (None, Some(wk)) => format!("N/A/{:>3}%", wk),
+            (None, None) => "N/A".to_string(),
+        };
+
+        let plan_str = quota.and_then(|q| q.subscription_tier.as_deref())
+            .or_else(|| cache.tokens.get(&acc.email).and_then(|t| t.subscription_tier.as_deref()))
+            .unwrap_or("Free");
+
+        let health_data = cache.health.get(&acc.email);
+        let (status_str, health_label) = match health_data {
+            Some(h) if h.consecutive_failures > 0 => {
+                let mark = if is_active { "★  ⚠️" } else { "   ✗" };
+                let failures = format!("{} Failures", h.consecutive_failures);
+                (mark, failures)
+            }
+            _ => {
+                let mark = if is_active { "  ★" } else { "  ○" };
+                (mark, "Healthy".to_string())
+            }
+        };
+
+        println!(
+            "│ {:^3} │ {:<8} │ {:<28} │ {:^8} │ {:^13} │ {:^13} │ {:<18} │",
+            idx + 1,
+            status_str,
+            acc.email,
+            plan_str,
+            gemini_str,
+            claude_str,
+            health_label
+        );
     }
-    println!("\n★ = Current active account used by Antigravity.");
+    println!("└───┴────────┴────────────────────────────┴────────┴─────────────┴─────────────┴──────────────────┘");
+    println!("★ = Active  |  ○ = Inactive  |  ⚠️ = Active Error  |  ✗ = Inactive Error");
 }
 
 pub async fn cli_auto_switch(accounts: &[Account], active_email: Option<&str>) {
@@ -331,6 +418,97 @@ pub async fn cli_switch(accounts: &[Account], identifier: &str) {
     } else {
         eprintln!("Error: Failed to refresh credentials for {}.", email);
         std::process::exit(1);
+    }
+}
+
+pub async fn cli_switch_interactive(accounts: &[Account]) {
+    if accounts.is_empty() {
+        println!("No accounts configured.");
+        return;
+    }
+
+    use crossterm::{
+        terminal::{enable_raw_mode, disable_raw_mode},
+        event::{self, Event, KeyCode},
+    };
+
+    println!("Select an account to activate (use Up/Down or j/k, Enter to select, Esc to cancel):");
+    let mut selected = 0;
+
+    if let Err(_) = enable_raw_mode() {
+        println!("Please enter the index of the account (0 to {}):", accounts.len() - 1);
+        for (idx, acc) in accounts.iter().enumerate() {
+            println!("  [{}] {}", idx, acc.email);
+        }
+        let mut input = String::new();
+        if std::io::stdin().read_line(&mut input).is_ok() {
+            if let Ok(idx) = input.trim().parse::<usize>() {
+                if idx < accounts.len() {
+                    cli_switch(accounts, &accounts[idx].email).await;
+                    return;
+                }
+            }
+        }
+        println!("Invalid selection.");
+        return;
+    }
+
+    for (idx, acc) in accounts.iter().enumerate() {
+        if idx == selected {
+            println!("  > \x1b[36m{}\x1b[0m", acc.email);
+        } else {
+            println!("    {}", acc.email);
+        }
+    }
+
+    let mut result_email = None;
+    loop {
+        if let Ok(Event::Key(key)) = event::read() {
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if selected > 0 {
+                        selected -= 1;
+                        print!("\x1b[{}F", accounts.len());
+                        for (idx, acc) in accounts.iter().enumerate() {
+                            if idx == selected {
+                                print!("\x1b[2K  > \x1b[36m{}\x1b[0m\n", acc.email);
+                            } else {
+                                print!("\x1b[2K    {}\n", acc.email);
+                            }
+                        }
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if selected < accounts.len() - 1 {
+                        selected += 1;
+                        print!("\x1b[{}F", accounts.len());
+                        for (idx, acc) in accounts.iter().enumerate() {
+                            if idx == selected {
+                                print!("\x1b[2K  > \x1b[36m{}\x1b[0m\n", acc.email);
+                            } else {
+                                print!("\x1b[2K    {}\n", acc.email);
+                            }
+                        }
+                    }
+                }
+                KeyCode::Enter => {
+                    result_email = Some(accounts[selected].email.clone());
+                    break;
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let _ = disable_raw_mode();
+    if let Some(email) = result_email {
+        println!();
+        cli_switch(accounts, &email).await;
+    } else {
+        println!("\nSwitch cancelled.");
     }
 }
 

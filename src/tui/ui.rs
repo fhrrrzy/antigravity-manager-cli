@@ -217,7 +217,22 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
     let mut rows = Vec::new();
     for (idx, acc) in app.get_visible_accounts().iter().enumerate() {
         let is_active = app.active_email.as_ref() == Some(&acc.email);
-        let active_mark = if is_active { "★" } else { " " };
+        let health = app.cli_cache.health.get(&acc.email);
+        let consecutive_failures = health.map(|h| h.consecutive_failures).unwrap_or(0);
+        
+        let (active_mark, active_mark_color) = if consecutive_failures > 0 {
+            if is_active {
+                ("⚠", palette.yellow_warning)
+            } else {
+                ("✗", palette.red_danger)
+            }
+        } else {
+            if is_active {
+                ("●", palette.green_success)
+            } else {
+                ("○", palette.border_inactive)
+            }
+        };
         
         let quota_cache = app.cli_cache.quotas.get(&acc.email);
         
@@ -318,7 +333,7 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
 
         let top_row_style = Style::default().bg(row_bg).fg(if is_active { palette.green_success } else { palette.fg });
         let top_cells = vec![
-            Cell::from(active_mark).style(if is_active { Style::default().fg(palette.green_success) } else { Style::default() }),
+            Cell::from(active_mark).style(Style::default().fg(active_mark_color)),
             email_cell,
             Cell::from(gemini_5h_bar).style(Style::default().fg(gemini_5h_color)),
             Cell::from(gemini_wk_bar).style(Style::default().fg(gemini_wk_color)),
@@ -376,14 +391,6 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
         let project_id = token_cache.and_then(|t| t.project_id.as_deref()).unwrap_or("N/A");
         let tier = quota_cache.and_then(|q| q.subscription_tier.as_deref()).unwrap_or(token_cache.and_then(|t| t.subscription_tier.as_deref()).unwrap_or("N/A"));
 
-        let details_chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(5), // Account profile info + status banner
-                Constraint::Min(5),    // Quota models list
-            ])
-            .split(content_chunks[1]);
-
         let is_highlight_active = app.active_email.as_ref() == Some(email);
         let status_span = if is_highlight_active {
             Span::styled(" ★ ACTIVE SESSION ", Style::default().bg(palette.green_success).fg(palette.bg).add_modifier(Modifier::BOLD))
@@ -391,13 +398,33 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
             Span::styled(" ○ INACTIVE ", Style::default().fg(palette.border_inactive))
         };
         
-        let header_text = vec![
+        let mut header_text = vec![
             Line::from(vec![Span::raw(" Email: "), Span::styled(mask_email(email, app.privacy_mode), Style::default().add_modifier(Modifier::BOLD))]),
             Line::from(vec![Span::raw(" Subscription Tier: "), Span::styled(tier, Style::default().fg(palette.border_active))]),
             Line::from(vec![Span::raw(" Project ID: "), Span::styled(project_id, Style::default().fg(palette.yellow_warning))]),
             Line::from(vec![Span::raw(" Status: "), status_span]),
         ];
-        
+
+        let mut header_height = 5;
+        if let Some(health) = app.cli_cache.health.get(email) {
+            if health.consecutive_failures > 0 {
+                if let Some(ref reason) = health.last_error {
+                    header_text.push(Line::from(vec![
+                        Span::styled(format!(" ⚠️ Error: {}", reason), Style::default().fg(palette.red_danger).add_modifier(Modifier::BOLD))
+                    ]));
+                    header_height = 6;
+                }
+            }
+        }
+
+        let details_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(header_height), // Dynamic height based on error warning
+                Constraint::Min(5),
+            ])
+            .split(content_chunks[1]);
+
         let details_header = Paragraph::new(header_text)
             .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Account Profile ").style(Style::default().fg(palette.border_inactive)));
         f.render_widget(details_header, details_chunks[0]);

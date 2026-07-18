@@ -45,10 +45,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "switch" => {
                 if args.len() < 3 {
-                    eprintln!("Usage: agm switch <index/email>");
-                    std::process::exit(1);
+                    cli::cli_switch_interactive(&accounts).await;
+                } else {
+                    cli::cli_switch(&accounts, &args[2]).await;
                 }
-                cli::cli_switch(&accounts, &args[2]).await;
             }
             "auto-switch" => {
                 cli::cli_auto_switch(&accounts, active_email.as_deref()).await;
