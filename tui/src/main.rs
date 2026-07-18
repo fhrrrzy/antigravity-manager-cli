@@ -2847,132 +2847,115 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ])
                 .split(chunks[1]);
 
-            let headers_list = if app.compact_mode {
-                vec!["Active", "Email", "Gemini 5h", "Claude 5h"]
-            } else {
-                vec!["Active", "Email", "Gemini 5h", "Gemini Wk", "Claude 5h", "Claude Wk"]
-            };
+            let headers_list = vec!["Active", "Email / Quota Pool", "Gemini (5h / Wk)", "Claude (5h / Wk)"];
             let header_cells = headers_list.iter().map(|h| Cell::from(*h).style(Style::default().fg(palette.border_active).add_modifier(Modifier::BOLD)));
             let header = Row::new(header_cells)
                 .style(Style::default().bg(palette.selection_bg))
                 .height(1)
                 .bottom_margin(1);
 
-            let rows: Vec<Row> = app.get_visible_accounts()
-                .iter()
-                .map(|acc| {
-                    let is_active = app.active_email.as_ref() == Some(&acc.email);
-                    let active_mark = if is_active { "★" } else { " " };
-                    
-                    let quota_cache = app.cli_cache.quotas.get(&acc.email);
-                    
-                    let gemini_pct = quota_cache.and_then(|q| {
-                        q.models.iter()
-                            .find(|m| m.name.contains("gemini") || m.display_name.as_ref().map(|n| n.contains("Gemini")).unwrap_or(false))
-                            .map(|m| m.percentage)
-                    });
-                    
-                    let claude_pct = quota_cache.and_then(|q| {
-                        q.models.iter()
-                            .find(|m| m.name.contains("claude") || m.display_name.as_ref().map(|n| n.contains("Claude")).unwrap_or(false))
-                            .map(|m| m.percentage)
-                    });
+            let mut rows = Vec::new();
+            for (idx, acc) in app.get_visible_accounts().iter().enumerate() {
+                let is_active = app.active_email.as_ref() == Some(&acc.email);
+                let active_mark = if is_active { "★" } else { " " };
+                
+                let quota_cache = app.cli_cache.quotas.get(&acc.email);
+                
+                let gemini_pct = quota_cache.and_then(|q| {
+                    q.models.iter()
+                        .find(|m| m.name.contains("gemini") || m.display_name.as_ref().map(|n| n.contains("Gemini")).unwrap_or(false))
+                        .map(|m| m.percentage)
+                });
+                
+                let claude_pct = quota_cache.and_then(|q| {
+                    q.models.iter()
+                        .find(|m| m.name.contains("claude") || m.display_name.as_ref().map(|n| n.contains("Claude")).unwrap_or(false))
+                        .map(|m| m.percentage)
+                });
 
-                    let get_weekly_pct = |quota_cache: Option<&QuotaData>, is_claude: bool| -> Option<i32> {
-                        let q = quota_cache?;
-                        let groups = q.quota_groups.as_ref()?;
-                        for group in groups {
-                            let gp_name = group.display_name.to_lowercase();
-                            let target_match = if is_claude {
-                                gp_name.contains("claude") || gp_name.contains("anthropic")
-                            } else {
-                                gp_name.contains("gemini") || gp_name.contains("google")
-                            };
+                let get_weekly_pct = |quota_cache: Option<&QuotaData>, is_claude: bool| -> Option<i32> {
+                    let q = quota_cache?;
+                    let groups = q.quota_groups.as_ref()?;
+                    for group in groups {
+                        let gp_name = group.display_name.to_lowercase();
+                        let target_match = if is_claude {
+                            gp_name.contains("claude") || gp_name.contains("anthropic")
+                        } else {
+                            gp_name.contains("gemini") || gp_name.contains("google")
+                        };
+                        
+                        for bucket in &group.buckets {
+                            let b_id = bucket.bucket_id.to_lowercase();
+                            let b_disp = bucket.display_name.as_ref().map(|s| s.to_lowercase()).unwrap_or_default();
+                            let is_weekly = bucket.window == "weekly" || b_id.contains("weekly") || b_disp.contains("weekly");
                             
-                            for bucket in &group.buckets {
-                                let b_id = bucket.bucket_id.to_lowercase();
-                                let b_disp = bucket.display_name.as_ref().map(|s| s.to_lowercase()).unwrap_or_default();
-                                let is_weekly = bucket.window == "weekly" || b_id.contains("weekly") || b_disp.contains("weekly");
+                            let name_match = target_match 
+                                || (is_claude && (b_id.contains("claude") || b_disp.contains("claude")))
+                                || (!is_claude && (b_id.contains("gemini") || b_disp.contains("gemini")));
                                 
-                                let name_match = target_match 
-                                    || (is_claude && (b_id.contains("claude") || b_disp.contains("claude")))
-                                    || (!is_claude && (b_id.contains("gemini") || b_disp.contains("gemini")));
-                                    
-                                if is_weekly && name_match {
-                                    return Some((bucket.remaining_fraction * 100.0).round() as i32);
-                                }
+                            if is_weekly && name_match {
+                                return Some((bucket.remaining_fraction * 100.0).round() as i32);
                             }
                         }
-                        None
-                    };
-
-                    let gemini_wk_pct = get_weekly_pct(quota_cache, false);
-                    let claude_wk_pct = get_weekly_pct(quota_cache, true);
-
-                    let bar_width = 8;
-                    let make_bar = |pct_opt: Option<i32>| -> (String, Color) {
-                        match pct_opt {
-                            Some(pct) => {
-                                let filled = ((pct as f64 / 100.0) * bar_width as f64).round() as usize;
-                                let empty = bar_width - filled;
-                                let bar_color = if pct >= 80 {
-                                    palette.green_success
-                                } else if pct >= 30 {
-                                    palette.yellow_warning
-                                } else {
-                                    palette.red_danger
-                                };
-                                (format!("{} {:>3}%", "█".repeat(filled) + &"░".repeat(empty), pct), bar_color)
-                            }
-                            None => ("N/A".to_string(), palette.border_inactive),
-                        }
-                    };
-
-                    let (gemini_5h_bar, gemini_5h_color) = make_bar(gemini_pct);
-                    let (gemini_wk_bar, gemini_wk_color) = make_bar(gemini_wk_pct);
-                    let (claude_5h_bar, claude_5h_color) = make_bar(claude_pct);
-                    let (claude_wk_bar, claude_wk_color) = make_bar(claude_wk_pct);
-
-                    let row_style = if is_active {
-                        Style::default().fg(palette.green_success).add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(palette.fg)
-                    };
-
-                    let mut cells = vec![
-                        Cell::from(active_mark).style(if is_active { Style::default().fg(palette.green_success) } else { Style::default() }),
-                        Cell::from(acc.email.clone()).style(row_style),
-                    ];
-                    if app.compact_mode {
-                        cells.push(Cell::from(gemini_5h_bar).style(Style::default().fg(gemini_5h_color)));
-                        cells.push(Cell::from(claude_5h_bar).style(Style::default().fg(claude_5h_color)));
-                    } else {
-                        cells.push(Cell::from(gemini_5h_bar).style(Style::default().fg(gemini_5h_color)));
-                        cells.push(Cell::from(gemini_wk_bar).style(Style::default().fg(gemini_wk_color)));
-                        cells.push(Cell::from(claude_5h_bar).style(Style::default().fg(claude_5h_color)));
-                        cells.push(Cell::from(claude_wk_bar).style(Style::default().fg(claude_wk_color)));
                     }
-                    Row::new(cells)
-                })
-                .collect();
+                    None
+                };
 
-            let widths: &[Constraint] = if app.compact_mode {
-                &[
-                    Constraint::Length(8),
-                    Constraint::Percentage(44),
-                    Constraint::Percentage(24),
-                    Constraint::Percentage(24),
-                ]
-            } else {
-                &[
-                    Constraint::Length(8),
-                    Constraint::Percentage(36),
-                    Constraint::Percentage(14),
-                    Constraint::Percentage(14),
-                    Constraint::Percentage(14),
-                    Constraint::Percentage(14),
-                ]
-            };
+                let gemini_wk_pct = get_weekly_pct(quota_cache, false);
+                let claude_wk_pct = get_weekly_pct(quota_cache, true);
+
+                let bar_width = 8;
+                let make_bar = |pct_opt: Option<i32>| -> (String, Color) {
+                    match pct_opt {
+                        Some(pct) => {
+                            let filled = ((pct as f64 / 100.0) * bar_width as f64).round() as usize;
+                            let empty = bar_width - filled;
+                            let bar_color = if pct >= 80 {
+                                palette.green_success
+                            } else if pct >= 30 {
+                                palette.yellow_warning
+                            } else {
+                                palette.red_danger
+                            };
+                            (format!("{} {:>3}%", "█".repeat(filled) + &"░".repeat(empty), pct), bar_color)
+                        }
+                        None => ("N/A".to_string(), palette.border_inactive),
+                    }
+                };
+
+                let (gemini_5h_bar, gemini_5h_color) = make_bar(gemini_pct);
+                let (gemini_wk_bar, gemini_wk_color) = make_bar(gemini_wk_pct);
+                let (claude_5h_bar, claude_5h_color) = make_bar(claude_pct);
+                let (claude_wk_bar, claude_wk_color) = make_bar(claude_wk_pct);
+
+                let is_selected = app.list_state.selected() == Some(idx);
+                let row_bg = if is_selected { palette.selection_bg } else { Color::Reset };
+
+                let top_row_style = Style::default().bg(row_bg).fg(if is_active { palette.green_success } else { palette.fg });
+                let top_cells = vec![
+                    Cell::from(active_mark).style(if is_active { Style::default().fg(palette.green_success) } else { Style::default() }),
+                    Cell::from(acc.email.clone()).style(if is_active { Style::default().add_modifier(Modifier::BOLD) } else { Style::default() }),
+                    Cell::from(gemini_5h_bar).style(Style::default().fg(gemini_5h_color)),
+                    Cell::from(claude_5h_bar).style(Style::default().fg(claude_5h_color)),
+                ];
+                rows.push(Row::new(top_cells).style(top_row_style));
+
+                let bottom_row_style = Style::default().bg(row_bg).fg(palette.border_inactive);
+                let bottom_cells = vec![
+                    Cell::from(""),
+                    Cell::from("  └─ weekly").style(Style::default().fg(palette.border_inactive)),
+                    Cell::from(gemini_wk_bar).style(Style::default().fg(gemini_wk_color)),
+                    Cell::from(claude_wk_bar).style(Style::default().fg(claude_wk_color)),
+                ];
+                rows.push(Row::new(bottom_cells).style(bottom_row_style));
+            }
+
+            let widths: &[Constraint] = &[
+                Constraint::Length(8),
+                Constraint::Percentage(44),
+                Constraint::Percentage(24),
+                Constraint::Percentage(24),
+            ];
 
             let table_border_color = if app.focused_panel == Focus::Accounts { palette.border_active } else { palette.border_inactive };
             let table_title = if app.is_searching {
@@ -2988,8 +2971,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let account_table = Table::new(rows, widths)
                 .header(header)
                 .block(Block::default().borders(Borders::ALL).title(table_title).style(Style::default().fg(table_border_color)))
-                .highlight_style(Style::default().bg(palette.selection_bg).add_modifier(Modifier::BOLD));
-            f.render_stateful_widget(account_table, content_chunks[0], &mut app.list_state);
+                .highlight_style(Style::default());
+
+            let mut render_state = TableState::default();
+            if let Some(selected_idx) = app.list_state.selected() {
+                render_state.select(Some(2 * selected_idx));
+            }
+            f.render_stateful_widget(account_table, content_chunks[0], &mut render_state);
 
             if let Some(selected_acc) = app.get_selected_account() {
                 let email = &selected_acc.email;
@@ -3989,22 +3977,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if mouse.column >= table_area.x && mouse.column < table_area.x + table_area.width {
                                 if mouse.row == table_area.y + 1 {
                                     if let Some(col_idx) = app.get_column_index(mouse.column, table_area) {
-                                        let new_mode = if app.compact_mode {
-                                            match col_idx {
-                                                0 | 1 => Some(SortMode::Email),
-                                                2 => Some(SortMode::Gemini5h),
-                                                3 => Some(SortMode::Claude5h),
-                                                _ => None,
+                                        let new_mode = match col_idx {
+                                            0 | 1 => Some(SortMode::Email),
+                                            2 => {
+                                                if app.sort_mode == SortMode::Gemini5h {
+                                                    Some(SortMode::GeminiWeekly)
+                                                } else {
+                                                    Some(SortMode::Gemini5h)
+                                                }
                                             }
-                                        } else {
-                                            match col_idx {
-                                                0 | 1 => Some(SortMode::Email),
-                                                2 => Some(SortMode::Gemini5h),
-                                                3 => Some(SortMode::GeminiWeekly),
-                                                4 => Some(SortMode::Claude5h),
-                                                5 => Some(SortMode::ClaudeWeekly),
-                                                _ => None,
+                                            3 => {
+                                                if app.sort_mode == SortMode::Claude5h {
+                                                    Some(SortMode::ClaudeWeekly)
+                                                } else {
+                                                    Some(SortMode::Claude5h)
+                                                }
                                             }
+                                            _ => None,
                                         };
                                         
                                         if let Some(mode) = new_mode {
@@ -4016,7 +4005,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                     }
                                 } else if mouse.row >= table_area.y + 3 {
-                                    let clicked_idx = (mouse.row - (table_area.y + 3)) as usize;
+                                    let clicked_idx = ((mouse.row - (table_area.y + 3)) / 2) as usize;
                                     let clicked_account = {
                                         let visible = app.get_visible_accounts();
                                         if clicked_idx < visible.len() {
