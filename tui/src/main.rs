@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event as CEvent, KeyCode, KeyEvent},
@@ -10,10 +10,10 @@ use crossterm::{
 };
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
     Terminal,
 };
 use serde::{Deserialize, Serialize};
@@ -70,9 +70,29 @@ struct CliCache {
     quotas: HashMap<String, QuotaData>,
 }
 
+#[derive(Clone, PartialEq)]
+enum InputMode {
+    Normal,
+    AddAccount {
+        email: String,
+        refresh_token: String,
+        active_field: usize, // 0 for Email, 1 for Refresh Token
+        error_message: Option<String>,
+    },
+}
+
+enum AddAccountAction {
+    Cancel,
+    CycleField,
+    InputChar(char),
+    Backspace,
+    Submit,
+}
+
 enum AppEvent {
     Key(KeyEvent),
     Tick,
+    Progress(String),
     NetworkSuccess(NetworkResult),
     NetworkError(String),
 }
@@ -93,10 +113,14 @@ enum NetworkResult {
         email: String,
         keyring_success: bool,
     },
+    AddAccountComplete {
+        new_account: Account,
+    },
 }
 
 struct App {
     accounts: Vec<Account>,
+    db_path: PathBuf,
     db_desc: String,
     active_email: Option<String>,
     list_state: ListState,
@@ -105,10 +129,11 @@ struct App {
     status_message: String,
     status_time: Option<Instant>,
     is_loading: bool,
+    input_mode: InputMode,
 }
 
 impl App {
-    fn new(accounts: Vec<Account>, db_desc: String, active: Option<String>, cache: CliCache, history: HashMap<String, i64>) -> Self {
+    fn new(accounts: Vec<Account>, db_path: PathBuf, db_desc: String, active: Option<String>, cache: CliCache, history: HashMap<String, i64>) -> Self {
         let mut list_state = ListState::default();
         if !accounts.is_empty() {
             list_state.select(Some(0));
@@ -116,6 +141,7 @@ impl App {
         
         Self {
             accounts,
+            db_path,
             db_desc,
             active_email: active,
             list_state,
@@ -124,6 +150,7 @@ impl App {
             status_message: "Welcome to Antigravity TUI Manager!".to_string(),
             status_time: Some(Instant::now()),
             is_loading: false,
+            input_mode: InputMode::Normal,
         }
     }
 
@@ -247,7 +274,7 @@ fn save_warmup_history(history: &HashMap<String, i64>) {
 }
 
 // Load accounts index or backup
-fn load_accounts_list() -> (Vec<Account>, String) {
+fn load_accounts_list() -> (Vec<Account>, PathBuf, String) {
     // Try primary backup path first
     let backup_paths = [
         "/data/data/com.termux/files/home/.antigravity_tools/antigravity_accounts_2026-07-17.json",
@@ -277,7 +304,7 @@ fn load_accounts_list() -> (Vec<Account>, String) {
                         });
                     }
                     if !accounts.is_empty() {
-                        return (accounts, format!("Backup file '{}'", path.file_name().unwrap().to_string_lossy()));
+                        return (accounts, path.clone(), format!("Backup file '{}'", path.file_name().unwrap().to_string_lossy()));
                     }
                 }
             }
@@ -289,7 +316,6 @@ fn load_accounts_list() -> (Vec<Account>, String) {
     let index_path = data_dir.join("accounts.json");
     if index_path.exists() {
         if let Ok(content) = fs::read_to_string(&index_path) {
-            // Clean index contents from BOM/NUL
             let cleaned = content.replace("\u{feff}", "").replace('\x00', "");
             
             #[derive(Deserialize)]
@@ -322,7 +348,7 @@ fn load_accounts_list() -> (Vec<Account>, String) {
                                     email: acc.email,
                                     refresh_token: details.token.refresh_token,
                                     name: acc.name.unwrap_or_else(|| "N/A".to_string()),
-                                    source: "Tauri SQLite/JSON index".to_string(),
+                                    source: "Tauri official database".to_string(),
                                     id: Some(acc.id),
                                 });
                             }
@@ -330,13 +356,13 @@ fn load_accounts_list() -> (Vec<Account>, String) {
                     }
                 }
                 if !accounts.is_empty() {
-                    return (accounts, "Tauri official database".to_string());
+                    return (accounts, index_path.clone(), "Tauri official database".to_string());
                 }
             }
         }
     }
 
-    (Vec::new(), "No account source found".to_string())
+    (Vec::new(), PathBuf::from(""), "No account source found".to_string())
 }
 
 fn get_active_email(accounts: &[Account]) -> Option<String> {
@@ -619,7 +645,6 @@ async fn async_fetch_quota(access_token: &str, project_id: Option<&str>) -> Resu
                         return Ok(models);
                     }
                 } else if resp.status() == reqwest::StatusCode::FORBIDDEN {
-                    // Try without project ID
                     if project_id.is_some() {
                         return Box::pin(async_fetch_quota(access_token, None)).await;
                     }
@@ -720,31 +745,148 @@ async fn ensure_valid_token(email: &str, refresh_token: &str, cli_cache: &mut Cl
     }
 }
 
+// Write a new account directly to the database file
+fn add_account_to_db(path: &Path, email: &str, refresh_token: &str) -> Result<Account, String> {
+    if !path.exists() {
+        return Err("Database file does not exist.".to_string());
+    }
+    
+    let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let cleaned = content.replace("\u{feff}", "").replace('\x00', "");
+    
+    if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&cleaned) {
+        let name = email.split('@').next().unwrap_or("").to_string();
+        
+        if let Some(arr) = val.as_array_mut() {
+            // Backup JSON list format
+            if arr.iter().any(|x| x.get("email").and_then(|e| e.as_str()) == Some(email)) {
+                return Err("Account email already exists in database.".to_string());
+            }
+            arr.push(json!({
+                "email": email,
+                "refresh_token": refresh_token
+            }));
+            let new_content = serde_json::to_string_pretty(&val).map_err(|e| e.to_string())?;
+            fs::write(path, new_content).map_err(|e| e.to_string())?;
+            return Ok(Account {
+                email: email.to_string(),
+                refresh_token: refresh_token.to_string(),
+                name: name.clone(),
+                source: format!("backup ({})", path.file_name().unwrap().to_string_lossy()),
+                id: None,
+            });
+        } else if let Some(obj) = val.as_object_mut() {
+            // Tauri accounts.json format
+            let accounts_arr = obj.get_mut("accounts").and_then(|a| a.as_array_mut());
+            if let Some(arr) = accounts_arr {
+                if arr.iter().any(|x| x.get("email").and_then(|e| e.as_str()) == Some(email)) {
+                    return Err("Account email already exists in database.".to_string());
+                }
+                
+                let new_id = Uuid::new_v4().to_string();
+                arr.push(json!({
+                    "id": new_id,
+                    "email": email,
+                    "name": name.clone()
+                }));
+                
+                // Write accounts/{id}.json file
+                let data_dir = path.parent().unwrap();
+                let acc_dir = data_dir.join("accounts");
+                let _ = fs::create_dir_all(&acc_dir);
+                let acc_path = acc_dir.join(format!("{}.json", new_id));
+                let acc_details = json!({
+                    "id": new_id,
+                    "email": email,
+                    "name": name.clone(),
+                    "token": {
+                        "refresh_token": refresh_token
+                    }
+                });
+                let acc_content = serde_json::to_string_pretty(&acc_details).map_err(|e| e.to_string())?;
+                fs::write(acc_path, acc_content).map_err(|e| e.to_string())?;
+                
+                // Save updated accounts.json
+                let new_content = serde_json::to_string_pretty(&val).map_err(|e| e.to_string())?;
+                fs::write(path, new_content).map_err(|e| e.to_string())?;
+                
+                return Ok(Account {
+                    email: email.to_string(),
+                    refresh_token: refresh_token.to_string(),
+                    name: name.clone(),
+                    source: "Tauri official database".to_string(),
+                    id: Some(new_id),
+                });
+            }
+        }
+    }
+    
+    Err("Unknown/Unsupported database format.".to_string())
+}
+
 // Background network task runner (for TUI)
 fn spawn_network_task(
     event_tx: mpsc::UnboundedSender<AppEvent>,
-    account: Account,
+    account: Option<Account>,
+    accounts_all: Vec<Account>,
     mut cli_cache: CliCache,
     warmup_history: HashMap<String, i64>,
     action: &'static str,
     target_model: Option<String>,
     force: bool,
+    new_acc_details: Option<(String, String, PathBuf)>, // (email, token, db_path) for adding
 ) {
     tokio::spawn(async move {
-        let email = account.email.clone();
-        
-        let token_info = ensure_valid_token(&email, &account.refresh_token, &mut cli_cache).await;
-        if token_info.is_none() {
-            let _ = event_tx.send(AppEvent::NetworkError(format!("Failed to refresh credentials for {}", email)));
-            return;
-        }
-        
-        let (access_token, resolved_proj_id) = token_info.unwrap();
         let now = chrono::Utc::now().timestamp();
         
         match action {
+            "add_account" => {
+                let (email, rt, db_path) = new_acc_details.unwrap();
+                let _ = event_tx.send(AppEvent::Progress(format!("Validating refresh token for {}...", email)));
+                
+                // 1. Validate refresh token by requesting a fresh access token
+                if let Some((access_token, expiry)) = async_refresh_token(rt.clone()).await {
+                    let _ = event_tx.send(AppEvent::Progress(format!("Verifying project settings for {}...", email)));
+                    let (proj_id, tier) = async_fetch_project_and_tier(&access_token).await;
+                    
+                    // 2. Add to local db file
+                    let _ = event_tx.send(AppEvent::Progress("Writing credentials to database...".to_string()));
+                    match add_account_to_db(&db_path, &email, &rt) {
+                        Ok(new_acc) => {
+                            // 3. Cache token info
+                            cli_cache.tokens.insert(email.clone(), TokenCache {
+                                access_token,
+                                expiry_timestamp: expiry,
+                                project_id: proj_id,
+                                subscription_tier: tier,
+                            });
+                            save_cli_cache(&cli_cache);
+                            
+                            let _ = event_tx.send(AppEvent::NetworkSuccess(NetworkResult::AddAccountComplete {
+                                new_account: new_acc,
+                            }));
+                        }
+                        Err(e) => {
+                            let _ = event_tx.send(AppEvent::NetworkError(format!("Add account failed: {}", e)));
+                        }
+                    }
+                } else {
+                    let _ = event_tx.send(AppEvent::NetworkError("Validation failed: Invalid refresh token.".to_string()));
+                }
+            }
             "switch" => {
+                let account = account.unwrap();
+                let email = account.email.clone();
+                let _ = event_tx.send(AppEvent::Progress(format!("Connecting session for {}...", email)));
+                
+                let token_info = ensure_valid_token(&email, &account.refresh_token, &mut cli_cache).await;
+                if token_info.is_none() {
+                    let _ = event_tx.send(AppEvent::NetworkError(format!("Failed to refresh credentials for {}", email)));
+                    return;
+                }
+                let (access_token, _proj_id) = token_info.unwrap();
                 let expiry = cli_cache.tokens.get(&email).map(|d| d.expiry_timestamp).unwrap_or(now + 3600);
+                
                 let keyring_success = write_to_system_keyring(&email, &access_token, &account.refresh_token, expiry);
                 
                 let _ = event_tx.send(AppEvent::NetworkSuccess(NetworkResult::SwitchComplete {
@@ -752,7 +894,6 @@ fn spawn_network_task(
                     keyring_success,
                 }));
                 
-                // Propagate project ID & subscription tier back to TUI
                 let details = cli_cache.tokens.get(&email).cloned();
                 if let Some(fd) = details {
                     let _ = event_tx.send(AppEvent::NetworkSuccess(NetworkResult::QuotaRefreshed {
@@ -763,6 +904,16 @@ fn spawn_network_task(
                 }
             }
             "quota" => {
+                let account = account.unwrap();
+                let email = account.email.clone();
+                
+                let token_info = ensure_valid_token(&email, &account.refresh_token, &mut cli_cache).await;
+                if token_info.is_none() {
+                    let _ = event_tx.send(AppEvent::NetworkError(format!("Failed to refresh credentials for {}", email)));
+                    return;
+                }
+                let (access_token, resolved_proj_id) = token_info.unwrap();
+                
                 match async_fetch_quota(&access_token, resolved_proj_id.as_deref()).await {
                     Ok(models) => {
                         let tier = cli_cache.tokens.get(&email).and_then(|d| d.subscription_tier.clone());
@@ -782,8 +933,17 @@ fn spawn_network_task(
                 }
             }
             "warmup" => {
-                let mut models = cli_cache.quotas.get(&email).map(|q| q.models.clone()).unwrap_or_default();
+                let account = account.unwrap();
+                let email = account.email.clone();
                 
+                let token_info = ensure_valid_token(&email, &account.refresh_token, &mut cli_cache).await;
+                if token_info.is_none() {
+                    let _ = event_tx.send(AppEvent::NetworkError(format!("Failed to refresh credentials for {}", email)));
+                    return;
+                }
+                let (access_token, resolved_proj_id) = token_info.unwrap();
+                
+                let mut models = cli_cache.quotas.get(&email).map(|q| q.models.clone()).unwrap_or_default();
                 if models.is_empty() || force {
                     if let Ok(m) = async_fetch_quota(&access_token, resolved_proj_id.as_deref()).await {
                         models = m;
@@ -845,15 +1005,14 @@ fn spawn_network_task(
                         if let Some(&last_ts) = warmup_history.get(&key) {
                             let elapsed = now - last_ts;
                             if elapsed < COOLDOWN_SECONDS {
-                                let rem = COOLDOWN_SECONDS - elapsed;
-                                logs.push(format!("Skipped {}: Cooling down ({}h {}m left).", display, rem / 3600, (rem % 3600) / 60));
+                                logs.push(format!("Skipped {}: Cooling down ({}h {}m left).", display, (COOLDOWN_SECONDS - elapsed) / 3600, ((COOLDOWN_SECONDS - elapsed) % 3600) / 60));
                                 skipped_count += 1;
                                 continue;
                             }
                         }
                     }
                     
-                    logs.push(format!("Warming up {}...", display));
+                    let _ = event_tx.send(AppEvent::Progress(format!("Warming up model {}...", display)));
                     match async_trigger_warmup(&access_token, &name, resolved_proj_id.as_deref(), &email).await {
                         Ok(_) => {
                             logs.push(format!("✓ Warmup successful for {}!", display));
@@ -882,6 +1041,88 @@ fn spawn_network_task(
                     save_warmup_history(&history);
                 }
             }
+            "warmup_all" => {
+                let mut total_warmups = 0;
+                let mut total_skipped = 0;
+                let mut total_logs = Vec::new();
+                let count_accs = accounts_all.len();
+                
+                for (idx, acc) in accounts_all.iter().enumerate() {
+                    let email = &acc.email;
+                    let _ = event_tx.send(AppEvent::Progress(format!("[{}/{}] Refreshing token for {}...", idx + 1, count_accs, email)));
+                    
+                    let token_info = ensure_valid_token(email, &acc.refresh_token, &mut cli_cache).await;
+                    if token_info.is_none() {
+                        total_logs.push(format!("Skipped {}: Token refresh failed.", email));
+                        total_skipped += 1;
+                        continue;
+                    }
+                    let (access_token, resolved_proj_id) = token_info.unwrap();
+                    
+                    let mut models = cli_cache.quotas.get(email).map(|q| q.models.clone()).unwrap_or_default();
+                    if models.is_empty() || force {
+                        if let Ok(m) = async_fetch_quota(&access_token, resolved_proj_id.as_deref()).await {
+                            models = m;
+                        }
+                    }
+                    
+                    let mut to_warm = Vec::new();
+                    for m in &models {
+                        if m.percentage >= 100 {
+                            to_warm.push(m.clone());
+                        }
+                    }
+                    
+                    if to_warm.is_empty() {
+                        total_logs.push(format!("✓ {}: All models have remaining usage.", email));
+                        continue;
+                    }
+                    
+                    for m in to_warm {
+                        let name = m.name;
+                        let display = m.display_name.unwrap_or_else(|| name.clone());
+                        
+                        if name.contains("2.5-") || name.contains("2-5-") {
+                            continue;
+                        }
+                        
+                        if !force {
+                            let key = format!("{}:{}:100", email, name);
+                            if let Some(&last_ts) = warmup_history.get(&key) {
+                                let elapsed = now - last_ts;
+                                if elapsed < COOLDOWN_SECONDS {
+                                    total_skipped += 1;
+                                    continue;
+                                }
+                            }
+                        }
+                        
+                        let _ = event_tx.send(AppEvent::Progress(format!("[{}/{}] Warmup {} on {}...", idx + 1, count_accs, display, email)));
+                        match async_trigger_warmup(&access_token, &name, resolved_proj_id.as_deref(), email).await {
+                            Ok(_) => {
+                                total_logs.push(format!("✓ {} [{}]: Warmup successful!", email, display));
+                                total_warmups += 1;
+                                
+                                let mut history = load_warmup_history();
+                                let key = format!("{}:{}:100", email, name);
+                                history.insert(key, chrono::Utc::now().timestamp());
+                                save_warmup_history(&history);
+                            }
+                            Err(e) => {
+                                total_logs.push(format!("✗ {} [{}]: Failed: {}", email, display, e));
+                            }
+                        }
+                        tokio::time::sleep(Duration::from_millis(800)).await;
+                    }
+                }
+                
+                let _ = event_tx.send(AppEvent::NetworkSuccess(NetworkResult::WarmupComplete {
+                    email: "All Accounts".to_string(),
+                    warmup_count: total_warmups,
+                    skipped_count: total_skipped,
+                    logs: total_logs,
+                }));
+            }
             _ => {}
         }
     });
@@ -906,9 +1147,9 @@ fn cli_list(accounts: &[Account], active_email: Option<&str>, source: &str) {
         return;
     }
     println!("\nAccounts List (Source: {}):", source);
-    println!("============================================================");
+    println!("=============================================================");
     println!("{:<3} | {:<6} | {:<32} | {:<20}", "#", "Active", "Email", "Name");
-    println!("------------------------------------------------------------");
+    println!("-------------------------------------------------------------");
     for (idx, acc) in accounts.iter().enumerate() {
         let is_active = active_email == Some(&acc.email);
         let active_mark = if is_active { "★" } else { " " };
@@ -1044,6 +1285,90 @@ async fn cli_quota(accounts: &[Account], active_email: Option<&str>, identifier:
 }
 
 async fn cli_warmup(accounts: &[Account], active_email: Option<&str>, identifier: Option<&str>, model_name: Option<&str>, force: bool) {
+    if identifier == Some("all") {
+        println!("Running Warm Up cycle for ALL configured accounts sequentially...");
+        let mut cache = load_cli_cache();
+        let mut history = load_warmup_history();
+        let now = chrono::Utc::now().timestamp();
+        let count_accs = accounts.len();
+        
+        for (idx, acc) in accounts.iter().enumerate() {
+            let email = &acc.email;
+            println!("\n[{}/{}] Processing account: {}...", idx + 1, count_accs, email);
+            
+            let (access_token, mut project_id) = match ensure_valid_token(email, &acc.refresh_token, &mut cache).await {
+                Some(t) => t,
+                None => {
+                    eprintln!("✗ Error: Failed to validate credentials for {}. Skipping.", email);
+                    continue;
+                }
+            };
+            
+            let mut models = cache.quotas.get(email).map(|q| q.models.clone()).unwrap_or_default();
+            if models.is_empty() || force {
+                let (api_proj, tier) = async_fetch_project_and_tier(&access_token).await;
+                if api_proj.is_some() {
+                    project_id = api_proj.clone();
+                    if let Some(tc) = cache.tokens.get_mut(email) {
+                        tc.project_id = api_proj;
+                        tc.subscription_tier = tier;
+                    }
+                }
+                if let Ok(m) = async_fetch_quota(&access_token, project_id.as_deref()).await {
+                    models = m;
+                }
+            }
+            
+            let mut to_warm = Vec::new();
+            for m in &models {
+                if m.percentage >= 100 {
+                    to_warm.push(m.clone());
+                }
+            }
+            
+            if to_warm.is_empty() {
+                println!("✓ All models have remaining usage. No warmup needed.");
+                continue;
+            }
+            
+            for m in to_warm {
+                let display = m.display_name.as_deref().unwrap_or(&m.name);
+                
+                if m.name.contains("2.5-") || m.name.contains("2-5-") {
+                    continue;
+                }
+                
+                if !force {
+                    let key = format!("{}:{}:100", email, m.name);
+                    if let Some(&last) = history.get(&key) {
+                        let elapsed = now - last;
+                        if elapsed < COOLDOWN_SECONDS {
+                            let rem = COOLDOWN_SECONDS - elapsed;
+                            println!("Skipping {}: Cooling down ({}h {}m remaining).", display, rem / 3600, (rem % 3600) / 60);
+                            continue;
+                        }
+                    }
+                }
+                
+                println!("Warming up model {}...", display);
+                match async_trigger_warmup(&access_token, &m.name, project_id.as_deref(), email).await {
+                    Ok(_) => {
+                        println!("✓ Successfully warmed up {}!", display);
+                        let key = format!("{}:{}:100", email, m.name);
+                        history.insert(key, chrono::Utc::now().timestamp());
+                        save_warmup_history(&history);
+                    }
+                    Err(e) => {
+                        println!("✗ Warmup failed for {}: {}", display, e);
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(800)).await;
+            }
+        }
+        println!("\nWarmup cycle for all accounts completed.");
+        return;
+    }
+    
     let target_email = match identifier {
         Some(id) => match find_account_by_identifier(accounts, id) {
             Some(a) => &a.email,
@@ -1155,13 +1480,34 @@ async fn cli_warmup(accounts: &[Account], active_email: Option<&str>, identifier
     println!("Warmup cycle finished. Triggered {} warmup(s).", count);
 }
 
+// Centered rect generator helper for rendering popups
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
+}
+
 // ---------------------------------------------------------
 // MAIN RUNTIME ORCHESTRATOR
 // ---------------------------------------------------------
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let (accounts, db_desc) = load_accounts_list();
+    let (accounts, db_path, db_desc) = load_accounts_list();
     let active_email = get_active_email(&accounts);
     
     // Parse command line arguments
@@ -1175,7 +1521,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "switch" => {
                 if args.len() < 3 {
-                    eprintln!("Usage: agm-tui switch <index/email>");
+                    eprintln!("Usage: agm switch <index/email>");
                     std::process::exit(1);
                 }
                 cli_switch(&accounts, &args[2]).await;
@@ -1222,18 +1568,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "help" | "-h" | "--help" => {
                 println!("Antigravity Manager (Rust Unified Edition)\n");
                 println!("Usage:");
-                println!("  agm-tui                   Launch interactive terminal user interface (TUI)");
-                println!("  agm-tui list              List configured accounts");
-                println!("  agm-tui switch <id>       Switch the active account");
-                println!("  agm-tui quota [id] [-r]   Display quotas (use --refresh to update)");
-                println!("  agm-tui warmup [id] [flg] Run warmup cycles (use --model <name> or --force)");
+                println!("  agm                   Launch interactive terminal user interface (TUI)");
+                println!("  agm list              List configured accounts");
+                println!("  agm switch <id>       Switch the active account");
+                println!("  agm quota [id] [-r]   Display quotas (use --refresh to update)");
+                println!("  agm warmup [id] [flg] Run warmup cycles (use --model <name> or --force)");
+                println!("  agm warmup all        Sequentially warm up ALL configured accounts");
                 println!("\nExamples:");
-                println!("  agm-tui switch 3");
-                println!("  agm-tui quota --refresh");
-                println!("  agm-tui warmup --force");
+                println!("  agm switch 3");
+                println!("  agm quota --refresh");
+                println!("  agm warmup all");
             }
             _ => {
-                eprintln!("Unknown command '{}'. Type 'agm-tui --help' for help.", subcommand);
+                eprintln!("Unknown command '{}'. Type 'agm --help' for help.", subcommand);
                 std::process::exit(1);
             }
         }
@@ -1268,7 +1615,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Initialize TUI App state
-    let mut app = App::new(accounts, db_desc, active_email, cache, history);
+    let mut app = App::new(accounts, db_path, db_desc, active_email, cache, history);
 
     // Fetch initial quota in the background for active account if cached quota is empty
     if let Some(ref email) = app.active_email {
@@ -1276,13 +1623,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(acc) = app.accounts.iter().find(|a| a.email == *email).cloned() {
                 app.is_loading = true;
                 app.set_status(&format!("Auto-fetching initial quota for {}...", email));
-                spawn_network_task(event_tx.clone(), acc, app.cli_cache.clone(), app.warmup_history.clone(), "quota", None, false);
+                spawn_network_task(event_tx.clone(), Some(acc), Vec::new(), app.cli_cache.clone(), app.warmup_history.clone(), "quota", None, false, None);
             }
         }
     }
 
     loop {
-        // Render UI
+        // Render TUI
         terminal.draw(|f| {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
@@ -1356,16 +1703,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let details_chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
-                        Constraint::Length(4), // Account header (Tier/Proj)
+                        Constraint::Length(5), // Account profile info + status banner
                         Constraint::Min(5),    // Quota models list
                     ])
                     .split(content_chunks[1]);
 
-                // Render account header info
-                let header_text = format!(
-                    " Email: {}\n Subscription Tier: {}\n User Google Project ID: {}",
-                    email, tier, project_id
-                );
+                // Render account header info + Prominent color banner
+                let is_highlight_active = app.active_email.as_ref() == Some(email);
+                let status_span = if is_highlight_active {
+                    Span::styled(" ★ ACTIVE SESSION ", Style::default().bg(Color::Rgb(50, 150, 50)).fg(Color::White).add_modifier(Modifier::BOLD))
+                } else {
+                    Span::styled(" ○ INACTIVE ", Style::default().fg(Color::DarkGray))
+                };
+                
+                let header_text = vec![
+                    Line::from(vec![Span::raw(" Email: "), Span::styled(email, Style::default().add_modifier(Modifier::BOLD))]),
+                    Line::from(vec![Span::raw(" Subscription Tier: "), Span::styled(tier, Style::default().fg(Color::Cyan))]),
+                    Line::from(vec![Span::raw(" Project ID: "), Span::styled(project_id, Style::default().fg(Color::Yellow))]),
+                    Line::from(vec![Span::raw(" Status: "), status_span]),
+                ];
+                
                 let details_header = Paragraph::new(header_text)
                     .block(Block::default().borders(Borders::ALL).title(" Account Profile ").style(Style::default().fg(Color::Yellow)));
                 f.render_widget(details_header, details_chunks[0]);
@@ -1464,108 +1821,297 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             f.render_widget(status_block, chunks[2]);
 
             // 4. Footer keyboard shortcuts
-            let footer = Paragraph::new(" [Enter] Switch Active  |  [r] Refresh Quota  |  [w] Warm Up  |  [f] Force Warm Up  |  [q] Quit TUI")
+            let footer = Paragraph::new(" [Enter] Switch Active  |  [r] Refresh Quota  |  [w] Warm Up  |  [W] Warm All  |  [a] Add Account  |  [q] Quit TUI")
                 .style(Style::default().fg(Color::DarkGray));
             f.render_widget(footer, chunks[3]);
+
+            // Render Add Account Modal Overlay
+            if let InputMode::AddAccount { email, refresh_token, active_field, error_message } = &app.input_mode {
+                let block = Block::default()
+                    .title(" Add New Account ")
+                    .borders(Borders::ALL)
+                    .style(Style::default().bg(Color::Rgb(20, 20, 30)).fg(Color::Cyan));
+                
+                let area = centered_rect(65, 45, f.size());
+                f.render_widget(Clear, area); // Clean background overlay
+                
+                // Form layout splits
+                let modal_chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(3), // Email Field
+                        Constraint::Length(3), // Refresh Token Field
+                        Constraint::Length(3), // Error message if any
+                        Constraint::Min(1),    // Guidelines/Keyboard info
+                    ])
+                    .margin(2)
+                    .split(area);
+                
+                f.render_widget(block, area);
+
+                // Email field borders & highlight
+                let email_block = Block::default()
+                    .title(" 1. Email Address ")
+                    .borders(Borders::ALL)
+                    .style(if *active_field == 0 { Style::default().fg(Color::Yellow) } else { Style::default().fg(Color::DarkGray) });
+                let email_para = Paragraph::new(email.as_str()).block(email_block);
+                f.render_widget(email_para, modal_chunks[0]);
+
+                // Refresh token borders & highlight
+                let token_block = Block::default()
+                    .title(" 2. OAuth Refresh Token ")
+                    .borders(Borders::ALL)
+                    .style(if *active_field == 1 { Style::default().fg(Color::Yellow) } else { Style::default().fg(Color::DarkGray) });
+                let token_para = Paragraph::new(refresh_token.as_str()).block(token_block);
+                f.render_widget(token_para, modal_chunks[1]);
+
+                // Render Error panel if present
+                if let Some(err) = error_message {
+                    let err_para = Paragraph::new(format!("Error: {}", err))
+                        .style(Style::default().fg(Color::Rgb(220, 50, 50)).add_modifier(Modifier::BOLD));
+                    f.render_widget(err_para, modal_chunks[2]);
+                }
+
+                // Guidelines
+                let help_text = Paragraph::new(
+                    " [Tab] Switch Fields  |  [Enter] Verify & Add Account  |  [Esc] Cancel Modal\n (The refresh token will be validated with Google prior to saving.)"
+                )
+                .style(Style::default().fg(Color::DarkGray));
+                f.render_widget(help_text, modal_chunks[3]);
+            }
         })?;
 
         // Handle TUI events
         while let Ok(event) = event_rx.try_recv() {
             match event {
-                AppEvent::Key(key) => match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => {
-                        disable_raw_mode()?;
-                        execute!(
-                            terminal.backend_mut(),
-                            LeaveAlternateScreen,
-                            DisableMouseCapture
-                        )?;
-                        terminal.show_cursor()?;
-                        return Ok(());
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        if !app.is_loading {
-                            app.select_next();
+                AppEvent::Key(key) => {
+                    // Modal interactive input interception
+                    let mut add_account_action = None;
+                    if let InputMode::AddAccount { .. } = &app.input_mode {
+                        match key.code {
+                            KeyCode::Esc => {
+                                add_account_action = Some(AddAccountAction::Cancel);
+                            }
+                            KeyCode::Tab => {
+                                add_account_action = Some(AddAccountAction::CycleField);
+                            }
+                            KeyCode::Char(c) => {
+                                add_account_action = Some(AddAccountAction::InputChar(c));
+                            }
+                            KeyCode::Backspace => {
+                                add_account_action = Some(AddAccountAction::Backspace);
+                            }
+                            KeyCode::Enter => {
+                                add_account_action = Some(AddAccountAction::Submit);
+                            }
+                            _ => {}
                         }
                     }
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        if !app.is_loading {
-                            app.select_prev();
+
+                    if let Some(action) = add_account_action {
+                        let mut submit_data = None;
+                        if let InputMode::AddAccount { email, refresh_token, active_field, error_message } = &mut app.input_mode {
+                            match action {
+                                AddAccountAction::Cancel => {
+                                    app.input_mode = InputMode::Normal;
+                                    app.set_status("Add account cancelled.");
+                                }
+                                AddAccountAction::CycleField => {
+                                    *active_field = if *active_field == 0 { 1 } else { 0 };
+                                }
+                                AddAccountAction::InputChar(c) => {
+                                    if *active_field == 0 {
+                                        email.push(c);
+                                    } else {
+                                        refresh_token.push(c);
+                                    }
+                                }
+                                AddAccountAction::Backspace => {
+                                    if *active_field == 0 {
+                                        email.pop();
+                                    } else {
+                                        refresh_token.pop();
+                                    }
+                                }
+                                AddAccountAction::Submit => {
+                                    if email.trim().is_empty() || refresh_token.trim().is_empty() {
+                                        *error_message = Some("Both Email and Refresh Token are required.".to_string());
+                                    } else if !email.contains('@') {
+                                        *error_message = Some("Please enter a valid email address.".to_string());
+                                    } else {
+                                        submit_data = Some((email.clone(), refresh_token.clone()));
+                                    }
+                                }
+                            }
                         }
+
+                        if let Some((email, refresh_token)) = submit_data {
+                            app.is_loading = true;
+                            app.set_status(&format!("Initializing validation check for {}...", email));
+                            spawn_network_task(
+                                event_tx.clone(),
+                                None,
+                                Vec::new(),
+                                app.cli_cache.clone(),
+                                app.warmup_history.clone(),
+                                "add_account",
+                                None,
+                                false,
+                                Some((email, refresh_token, app.db_path.clone())),
+                            );
+                        }
+                        continue;
                     }
-                    KeyCode::Enter => {
-                        if !app.is_loading {
-                            if let Some(acc) = app.get_selected_account().cloned() {
+
+                    // Normal mode key bindings
+                    match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc => {
+                            disable_raw_mode()?;
+                            execute!(
+                                terminal.backend_mut(),
+                                LeaveAlternateScreen,
+                                DisableMouseCapture
+                            )?;
+                            terminal.show_cursor()?;
+                            return Ok(());
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            if !app.is_loading {
+                                app.select_next();
+                            }
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            if !app.is_loading {
+                                app.select_prev();
+                            }
+                        }
+                        KeyCode::Enter => {
+                            if !app.is_loading {
+                                if let Some(acc) = app.get_selected_account().cloned() {
+                                    app.is_loading = true;
+                                    app.set_status(&format!("Activating and writing keyring credentials for {}...", acc.email));
+                                    spawn_network_task(
+                                        event_tx.clone(),
+                                        Some(acc),
+                                        Vec::new(),
+                                        app.cli_cache.clone(),
+                                        app.warmup_history.clone(),
+                                        "switch",
+                                        None,
+                                        false,
+                                        None,
+                                    );
+                                }
+                            }
+                        }
+                        KeyCode::Char('r') => {
+                            if !app.is_loading {
+                                if let Some(acc) = app.get_selected_account().cloned() {
+                                    app.is_loading = true;
+                                    app.set_status(&format!("Refreshing quota statistics for {}...", acc.email));
+                                    spawn_network_task(
+                                        event_tx.clone(),
+                                        Some(acc),
+                                        Vec::new(),
+                                        app.cli_cache.clone(),
+                                        app.warmup_history.clone(),
+                                        "quota",
+                                        None,
+                                        false,
+                                        None,
+                                    );
+                                }
+                            }
+                        }
+                        KeyCode::Char('w') => {
+                            if !app.is_loading {
+                                if let Some(acc) = app.get_selected_account().cloned() {
+                                    app.is_loading = true;
+                                    app.set_status(&format!("Triggering smart warm up sequence for {}...", acc.email));
+                                    spawn_network_task(
+                                        event_tx.clone(),
+                                        Some(acc),
+                                        Vec::new(),
+                                        app.cli_cache.clone(),
+                                        app.warmup_history.clone(),
+                                        "warmup",
+                                        None,
+                                        false,
+                                        None,
+                                    );
+                                }
+                            }
+                        }
+                        KeyCode::Char('W') => {
+                            // Warm up ALL accounts
+                            if !app.is_loading {
                                 app.is_loading = true;
-                                app.set_status(&format!("Activating and writing keyring credentials for {}...", acc.email));
+                                app.set_status("Initializing Smart Warm Up cycle for ALL accounts...");
                                 spawn_network_task(
                                     event_tx.clone(),
-                                    acc,
+                                    None,
+                                    app.accounts.clone(),
                                     app.cli_cache.clone(),
                                     app.warmup_history.clone(),
-                                    "switch",
+                                    "warmup_all",
                                     None,
-                                    false
+                                    false,
+                                    None,
                                 );
                             }
                         }
-                    }
-                    KeyCode::Char('r') => {
-                        if !app.is_loading {
-                            if let Some(acc) = app.get_selected_account().cloned() {
-                                app.is_loading = true;
-                                app.set_status(&format!("Refreshing quota statistics for {}...", acc.email));
-                                spawn_network_task(
-                                    event_tx.clone(),
-                                    acc,
-                                    app.cli_cache.clone(),
-                                    app.warmup_history.clone(),
-                                    "quota",
-                                    None,
-                                    false
-                                );
+                        KeyCode::Char('f') => {
+                            if !app.is_loading {
+                                if let Some(acc) = app.get_selected_account().cloned() {
+                                    app.is_loading = true;
+                                    app.set_status(&format!("FORCE warming up all models for {} (ignoring cooldown)...", acc.email));
+                                    spawn_network_task(
+                                        event_tx.clone(),
+                                        Some(acc),
+                                        Vec::new(),
+                                        app.cli_cache.clone(),
+                                        app.warmup_history.clone(),
+                                        "warmup",
+                                        None,
+                                        true,
+                                        None,
+                                    );
+                                }
                             }
                         }
-                    }
-                    KeyCode::Char('w') => {
-                        if !app.is_loading {
-                            if let Some(acc) = app.get_selected_account().cloned() {
-                                app.is_loading = true;
-                                app.set_status(&format!("Triggering smart warm up sequence for {}...", acc.email));
-                                spawn_network_task(
-                                    event_tx.clone(),
-                                    acc,
-                                    app.cli_cache.clone(),
-                                    app.warmup_history.clone(),
-                                    "warmup",
-                                    None,
-                                    false
-                                );
+                        KeyCode::Char('a') => {
+                            if !app.is_loading {
+                                app.input_mode = InputMode::AddAccount {
+                                    email: String::new(),
+                                    refresh_token: String::new(),
+                                    active_field: 0,
+                                    error_message: None,
+                                };
                             }
                         }
+                        _ => {}
                     }
-                    KeyCode::Char('f') => {
-                        if !app.is_loading {
-                            if let Some(acc) = app.get_selected_account().cloned() {
-                                app.is_loading = true;
-                                app.set_status(&format!("FORCE warming up all models for {} (ignoring cooldown)...", acc.email));
-                                spawn_network_task(
-                                    event_tx.clone(),
-                                    acc,
-                                    app.cli_cache.clone(),
-                                    app.warmup_history.clone(),
-                                    "warmup",
-                                    None,
-                                    true
-                                );
-                            }
-                        }
-                    }
-                    _ => {}
-                },
+                }
+                AppEvent::Progress(msg) => {
+                    app.set_status(&msg);
+                }
                 AppEvent::NetworkSuccess(result) => {
                     app.is_loading = false;
                     match result {
+                        NetworkResult::AddAccountComplete { new_account } => {
+                            app.input_mode = InputMode::Normal;
+                            
+                            // Reload accounts list dynamically from file
+                            let (reload_accs, _, _) = load_accounts_list();
+                            app.accounts = reload_accs;
+                            
+                            // Set selection to new account
+                            if let Some(pos) = app.accounts.iter().position(|a| a.email == new_account.email) {
+                                app.list_state.select(Some(pos));
+                            }
+                            
+                            app.set_status(&format!("✓ Account {} successfully validated and added to database!", new_account.email));
+                        }
                         NetworkResult::SwitchComplete { email, keyring_success } => {
                             app.active_email = Some(email.clone());
                             app.cli_cache.active_email = Some(email.clone());
@@ -1583,7 +2129,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     tc.project_id = Some(pid);
                                 }
                             }
-                            // Only update models list if it's not empty, preserving profile tier
                             if !quota.models.is_empty() {
                                 app.cli_cache.quotas.insert(email.clone(), quota);
                             } else if let Some(tc) = app.cli_cache.tokens.get(&email) {
@@ -1606,17 +2151,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 app.set_status(&log);
                             }
                             
-                            if warmup_count > 0 {
+                            if warmup_count > 0 && email != "All Accounts" {
                                 if let Some(acc) = app.accounts.iter().find(|a| a.email == email).cloned() {
                                     app.is_loading = true;
                                     spawn_network_task(
                                         event_tx.clone(),
-                                        acc,
+                                        Some(acc),
+                                        Vec::new(),
                                         app.cli_cache.clone(),
                                         app.warmup_history.clone(),
                                         "quota",
                                         None,
-                                        false
+                                        false,
+                                        None,
                                     );
                                 }
                             }
@@ -1626,6 +2173,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 AppEvent::NetworkError(err) => {
                     app.is_loading = false;
                     app.set_status(&err);
+                    
+                    // Keep AddAccount form open if validation failed, updating error message
+                    if let InputMode::AddAccount { email, refresh_token, active_field, .. } = &app.input_mode {
+                        app.input_mode = InputMode::AddAccount {
+                            email: email.clone(),
+                            refresh_token: refresh_token.clone(),
+                            active_field: *active_field,
+                            error_message: Some(err.clone()),
+                        };
+                    }
                 }
                 AppEvent::Tick => {
                     app.update_status_decay();
