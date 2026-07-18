@@ -189,6 +189,7 @@ struct App {
     sort_mode: SortMode,
     search_query: String,
     is_searching: bool,
+    tick_count: u64,
 }
 
 impl App {
@@ -218,6 +219,7 @@ impl App {
             sort_mode: SortMode::Email,
             search_query: String::new(),
             is_searching: false,
+            tick_count: 0,
         };
         app.sort_accounts();
         app
@@ -2358,13 +2360,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ])
                 .split(f.size());
 
+            let local_time = chrono::Local::now().format("%H:%M:%S").to_string();
             let active_str = app.active_email.as_deref().unwrap_or("None");
             let title = Paragraph::new(format!(
-                " Antigravity Manager TUI | Source: {} | Active Account: {}",
-                app.db_desc, active_str
+                " Antigravity Manager TUI | Active: {} | db: {} | 🐉 Kanagawa Dragon | 🕒 {} | 🟢 Online ",
+                active_str, app.db_desc, local_time
             ))
-            .block(Block::default().borders(Borders::ALL).title(" System Header ").style(Style::default().fg(Color::Cyan)))
-            .style(Style::default().add_modifier(Modifier::BOLD));
+            .block(Block::default().borders(Borders::ALL).title(" System Control Dashboard ").style(Style::default().fg(Color::Rgb(122, 168, 159))))
+            .style(Style::default().fg(Color::Rgb(220, 215, 186)).add_modifier(Modifier::BOLD));
             f.render_widget(title, chunks[0]);
 
         let content_chunks = Layout::default()
@@ -2410,15 +2413,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let filled = ((pct as f64 / 100.0) * bar_width as f64).round() as usize;
                                 let empty = bar_width - filled;
                                 let bar_color = if pct >= 80 {
-                                    Color::Rgb(50, 200, 50)
+                                    Color::Rgb(138, 154, 134)
                                 } else if pct >= 30 {
-                                    Color::Rgb(240, 170, 30)
+                                    Color::Rgb(196, 178, 138)
                                 } else {
-                                    Color::Rgb(220, 50, 50)
+                                    Color::Rgb(196, 116, 110)
                                 };
                                 (format!("{} {:>3}%", "█".repeat(filled) + &"░".repeat(empty), pct), bar_color)
                             }
-                            None => ("N/A".to_string(), Color::DarkGray),
+                            None => ("N/A".to_string(), Color::Rgb(114, 114, 114)),
                         }
                     };
 
@@ -2445,18 +2448,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
 
                     let row_style = if is_active {
-                        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                        Style::default().fg(Color::Rgb(138, 154, 134)).add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(Color::White)
+                        Style::default().fg(Color::Rgb(220, 215, 186))
                     };
 
                     Row::new(vec![
-                        Cell::from(active_mark).style(if is_active { Style::default().fg(Color::Green) } else { Style::default() }),
+                        Cell::from(active_mark).style(if is_active { Style::default().fg(Color::Rgb(138, 154, 134)) } else { Style::default() }),
                         Cell::from(acc.email.clone()).style(row_style),
                         Cell::from(gemini_bar).style(Style::default().fg(gemini_color)),
                         Cell::from(claude_bar).style(Style::default().fg(claude_color)),
-                        Cell::from(five_h_reset).style(Style::default().fg(Color::Rgb(120, 180, 240))),
-                        Cell::from(weekly_reset).style(Style::default().fg(Color::Rgb(240, 120, 240))),
+                        Cell::from(five_h_reset).style(Style::default().fg(Color::Rgb(139, 164, 177))),
+                        Cell::from(weekly_reset).style(Style::default().fg(Color::Rgb(147, 138, 169))),
                     ])
                 })
                 .collect();
@@ -2470,7 +2473,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Constraint::Percentage(13),
             ];
 
-            let table_border_color = if app.focused_panel == Focus::Accounts { Color::Cyan } else { Color::DarkGray };
+            let table_border_color = if app.focused_panel == Focus::Accounts { Color::Rgb(122, 168, 159) } else { Color::Rgb(84, 84, 96) };
             let table_title = if app.is_searching {
                 format!(" Accounts Summary (Sorted by: {}) | 🔍 Find: {}_ ", app.sort_mode.to_str(), app.search_query)
             } else if !app.search_query.is_empty() {
@@ -2484,7 +2487,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let account_table = Table::new(rows, widths)
                 .header(header)
                 .block(Block::default().borders(Borders::ALL).title(table_title).style(Style::default().fg(table_border_color)))
-                .highlight_style(Style::default().bg(Color::Rgb(50, 50, 70)).add_modifier(Modifier::BOLD));
+                .highlight_style(Style::default().bg(Color::Rgb(42, 42, 53)).add_modifier(Modifier::BOLD));
             f.render_stateful_widget(account_table, content_chunks[0], &mut app.list_state);
 
             if let Some(selected_acc) = app.get_selected_account() {
@@ -2590,21 +2593,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             quota_items.push(ListItem::new(Line::from(vec![
                                 Span::styled(format!("{:<28}", display), Style::default().fg(Color::White)),
                                 Span::styled(bar_str, Style::default().fg(bar_color)),
-                                Span::styled(cooldown_str, Style::default().fg(Color::DarkGray)),
-                                Span::styled(reset_str, Style::default().fg(Color::Rgb(150, 150, 200))),
+                                Span::styled(cooldown_str, Style::default().fg(Color::Rgb(114, 114, 114))),
+                                Span::styled(reset_str, Style::default().fg(Color::Rgb(139, 164, 177))),
                             ])));
                         }
                     }
 
-                    let breakdown_border_color = if app.focused_panel == Focus::Breakdown { Color::Yellow } else { Color::DarkGray };
+                    let breakdown_border_color = if app.focused_panel == Focus::Breakdown { Color::Rgb(196, 178, 138) } else { Color::Rgb(84, 84, 96) };
                     let breakdown_title = if app.focused_panel == Focus::Breakdown { " Quotas Breakdown (Active Panel) " } else { " Quotas Breakdown " };
 
                     let quota_list = List::new(quota_items)
                         .block(Block::default().borders(Borders::ALL).title(breakdown_title).style(Style::default().fg(breakdown_border_color)))
-                        .highlight_style(Style::default().bg(Color::Rgb(50, 50, 70)).add_modifier(Modifier::BOLD));
+                        .highlight_style(Style::default().bg(Color::Rgb(42, 42, 53)).add_modifier(Modifier::BOLD));
                     f.render_stateful_widget(quota_list, details_chunks[1], &mut app.breakdown_state);
                 } else {
-                    let breakdown_border_color = if app.focused_panel == Focus::Breakdown { Color::Yellow } else { Color::DarkGray };
+                    let breakdown_border_color = if app.focused_panel == Focus::Breakdown { Color::Rgb(196, 178, 138) } else { Color::Rgb(84, 84, 96) };
                     let breakdown_title = if app.focused_panel == Focus::Breakdown { " Quotas Breakdown (Active Panel) " } else { " Quotas Breakdown " };
                     let empty_quota = Paragraph::new("\n No quota metrics cached in database. Press [r] to refresh active quotas.")
                         .block(Block::default().borders(Borders::ALL).title(breakdown_title).style(Style::default().fg(breakdown_border_color)));
@@ -2612,11 +2615,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             } else {
                 let fallback = Paragraph::new("\n Please select or configure an account first.")
-                    .block(Block::default().borders(Borders::ALL).title(" Profile Details ").style(Style::default().fg(Color::Yellow)));
+                    .block(Block::default().borders(Borders::ALL).title(" Profile Details ").style(Style::default().fg(Color::Rgb(84, 84, 96))));
                 f.render_widget(fallback, content_chunks[1]);
             }
 
-            let loader_prefix = if app.is_loading { "⏳ " } else { "" };
+            let loader_prefix = if app.is_loading {
+                let spin_chars = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+                let idx = (app.tick_count as usize) % spin_chars.len();
+                format!("{} ", spin_chars[idx])
+            } else {
+                "".to_string()
+            };
             let status_block = Paragraph::new(format!("{}{}", loader_prefix, app.status_message))
                 .block(Block::default().borders(Borders::ALL).title(" Logger Console ").style(Style::default().fg(Color::Green)))
                 .wrap(Wrap { trim: true });
@@ -3294,6 +3303,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 AppEvent::Tick => {
+                    app.tick_count += 1;
                     app.update_status_decay();
                 }
             }
