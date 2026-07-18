@@ -13,7 +13,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap, Table, Row, Cell, TableState},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap, Table, Row, Cell, TableState, ListState},
     Terminal,
 };
 use serde::{Deserialize, Serialize};
@@ -141,6 +141,12 @@ enum NetworkResult {
     },
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Focus {
+    Accounts,
+    Breakdown,
+}
+
 struct App {
     accounts: Vec<Account>,
     db_path: PathBuf,
@@ -153,6 +159,9 @@ struct App {
     status_time: Option<Instant>,
     is_loading: bool,
     input_mode: InputMode,
+    breakdown_state: ListState,
+    focused_panel: Focus,
+    show_help: bool,
 }
 
 impl App {
@@ -161,6 +170,8 @@ impl App {
         if !accounts.is_empty() {
             list_state.select(Some(0));
         }
+        let mut breakdown_state = ListState::default();
+        breakdown_state.select(Some(0));
         
         Self {
             accounts,
@@ -174,10 +185,34 @@ impl App {
             status_time: Some(Instant::now()),
             is_loading: false,
             input_mode: InputMode::Normal,
+            breakdown_state,
+            focused_panel: Focus::Accounts,
+            show_help: false,
         }
     }
 
     fn select_next(&mut self) {
+        if self.focused_panel == Focus::Breakdown {
+            if let Some(acc) = self.get_selected_account() {
+                if let Some(q) = self.cli_cache.quotas.get(&acc.email) {
+                    if !q.models.is_empty() {
+                        let i = match self.breakdown_state.selected() {
+                            Some(i) => {
+                                if i >= q.models.len() - 1 {
+                                    0
+                                } else {
+                                    i + 1
+                                }
+                            }
+                            None => 0,
+                        };
+                        self.breakdown_state.select(Some(i));
+                        return;
+                    }
+                }
+            }
+        }
+
         if self.accounts.is_empty() {
             return;
         }
@@ -195,6 +230,27 @@ impl App {
     }
 
     fn select_prev(&mut self) {
+        if self.focused_panel == Focus::Breakdown {
+            if let Some(acc) = self.get_selected_account() {
+                if let Some(q) = self.cli_cache.quotas.get(&acc.email) {
+                    if !q.models.is_empty() {
+                        let i = match self.breakdown_state.selected() {
+                            Some(i) => {
+                                if i == 0 {
+                                    q.models.len() - 1
+                                } else {
+                                    i - 1
+                                }
+                            }
+                            None => 0,
+                        };
+                        self.breakdown_state.select(Some(i));
+                        return;
+                    }
+                }
+            }
+        }
+
         if self.accounts.is_empty() {
             return;
         }
@@ -2209,9 +2265,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Constraint::Percentage(13),
             ];
 
+            let table_border_color = if app.focused_panel == Focus::Accounts { Color::Cyan } else { Color::DarkGray };
+            let table_title = if app.focused_panel == Focus::Accounts { " Accounts Summary (Active Panel) " } else { " Accounts Summary " };
+
             let account_table = Table::new(rows, widths)
                 .header(header)
-                .block(Block::default().borders(Borders::ALL).title(" Accounts Summary ").style(Style::default().fg(Color::Cyan)))
+                .block(Block::default().borders(Borders::ALL).title(table_title).style(Style::default().fg(table_border_color)))
                 .highlight_style(Style::default().bg(Color::Rgb(50, 50, 70)).add_modifier(Modifier::BOLD));
             f.render_stateful_widget(account_table, content_chunks[0], &mut app.list_state);
 
@@ -2324,12 +2383,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
 
+                    let breakdown_border_color = if app.focused_panel == Focus::Breakdown { Color::Yellow } else { Color::DarkGray };
+                    let breakdown_title = if app.focused_panel == Focus::Breakdown { " Quotas Breakdown (Active Panel) " } else { " Quotas Breakdown " };
+
                     let quota_list = List::new(quota_items)
-                        .block(Block::default().borders(Borders::ALL).title(" Quotas Breakdown ").style(Style::default().fg(Color::Yellow)));
-                    f.render_widget(quota_list, details_chunks[1]);
+                        .block(Block::default().borders(Borders::ALL).title(breakdown_title).style(Style::default().fg(breakdown_border_color)))
+                        .highlight_style(Style::default().bg(Color::Rgb(50, 50, 70)).add_modifier(Modifier::BOLD));
+                    f.render_stateful_widget(quota_list, details_chunks[1], &mut app.breakdown_state);
                 } else {
+                    let breakdown_border_color = if app.focused_panel == Focus::Breakdown { Color::Yellow } else { Color::DarkGray };
+                    let breakdown_title = if app.focused_panel == Focus::Breakdown { " Quotas Breakdown (Active Panel) " } else { " Quotas Breakdown " };
                     let empty_quota = Paragraph::new("\n No quota metrics cached in database. Press [r] to refresh active quotas.")
-                        .block(Block::default().borders(Borders::ALL).title(" Quotas Breakdown ").style(Style::default().fg(Color::Yellow)));
+                        .block(Block::default().borders(Borders::ALL).title(breakdown_title).style(Style::default().fg(breakdown_border_color)));
                     f.render_widget(empty_quota, details_chunks[1]);
                 }
             } else {
@@ -2344,9 +2409,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .wrap(Wrap { trim: true });
             f.render_widget(status_block, chunks[2]);
 
-            let footer = Paragraph::new(" [Enter] Switch | [r] Refresh Quota | [R] Refresh All | [w] Warm Up | [W] Warm All | [a] Custom | [l] Login | [q] Quit")
+            let footer = Paragraph::new(" [Enter] Switch | [r] Refresh | [R] Refresh All | [w] Warm Up | [W] Warm All | [Tab] Switch Panel | [h] Help | [q] Quit")
                 .style(Style::default().fg(Color::DarkGray));
             f.render_widget(footer, chunks[3]);
+
+            if app.show_help {
+                let block = Block::default()
+                    .title(" Keyboard Help Guide ")
+                    .borders(Borders::ALL)
+                    .style(Style::default().bg(Color::Rgb(20, 20, 35)).fg(Color::Cyan));
+                
+                let area = centered_rect(65, 55, f.size());
+                f.render_widget(Clear, area);
+                f.render_widget(block, area);
+
+                let help_text = vec![
+                    Line::from(vec![Span::styled("Navigation keys:", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))]),
+                    Line::from(vec![Span::raw("  Tab           Switch panel focus (Accounts Table <-> Quotas Breakdown)")]),
+                    Line::from(vec![Span::raw("  j / Down      Select next item in active panel")]),
+                    Line::from(vec![Span::raw("  k / Up        Select previous item in active panel")]),
+                    Line::from(vec![Span::raw("  Enter         Activate/Switch session to selected account")]),
+                    Line::from(vec![Span::raw("")]),
+                    Line::from(vec![Span::styled("Quota & Session actions:", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))]),
+                    Line::from(vec![Span::raw("  r             Refresh selected account's Google API quotas")]),
+                    Line::from(vec![Span::raw("  R             Batch refresh ALL accounts' quotas (asynchronously)")]),
+                    Line::from(vec![Span::raw("  w             Trigger smart warm up sequence for selected account")]),
+                    Line::from(vec![Span::raw("  W             Trigger smart warm up sequence for ALL accounts")]),
+                    Line::from(vec![Span::raw("  f             Force warm up selected account (ignores cooldowns)")]),
+                    Line::from(vec![Span::raw("")]),
+                    Line::from(vec![Span::styled("Account Management:", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))]),
+                    Line::from(vec![Span::raw("  a             Add custom account with manual refresh token")]),
+                    Line::from(vec![Span::raw("  l             Login via Google OAuth browser integration link")]),
+                    Line::from(vec![Span::raw("")]),
+                    Line::from(vec![Span::styled("Press [h], [Esc] or [q] to close this help guide", Style::default().fg(Color::Green))]),
+                ];
+
+                let help_para = Paragraph::new(help_text)
+                    .wrap(Wrap { trim: true });
+                
+                let help_area = Layout::default()
+                    .margin(2)
+                    .constraints([Constraint::Percentage(100)])
+                    .split(area)[0];
+                f.render_widget(help_para, help_area);
+            }
 
             if let InputMode::AddAccount { email, refresh_token, active_field, error_message } = &app.input_mode {
                 let block = Block::default()
@@ -2530,7 +2636,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
 
+                    if app.show_help {
+                        match key.code {
+                            KeyCode::Char('h') | KeyCode::Char('q') | KeyCode::Esc => {
+                                app.show_help = false;
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+
                     match key.code {
+                        KeyCode::Tab => {
+                            if !app.is_loading {
+                                app.focused_panel = match app.focused_panel {
+                                    Focus::Accounts => Focus::Breakdown,
+                                    Focus::Breakdown => Focus::Accounts,
+                                };
+                            }
+                        }
+                        KeyCode::Char('h') => {
+                            if !app.is_loading {
+                                app.show_help = true;
+                            }
+                        }
                         KeyCode::Char('q') | KeyCode::Esc => {
                             disable_raw_mode()?;
                             execute!(
