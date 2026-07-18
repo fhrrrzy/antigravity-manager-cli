@@ -194,6 +194,7 @@ struct App {
     log_history: Vec<String>,
     show_logs: bool,
     log_state: ListState,
+    last_auto_refresh: Option<Instant>,
 }
 
 impl App {
@@ -230,6 +231,7 @@ impl App {
             log_history: vec!["Welcome to Antigravity TUI Manager!".to_string()],
             show_logs: false,
             log_state,
+            last_auto_refresh: Some(Instant::now()),
         };
         app.sort_accounts();
         app
@@ -3184,6 +3186,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         KeyCode::Char('R') => {
                             if !app.is_loading {
                                 app.is_loading = true;
+                                app.last_auto_refresh = Some(Instant::now());
                                 app.set_status("Initializing non-blocking Quotas Reload for ALL accounts...");
                                 spawn_network_task(
                                     event_tx.clone(),
@@ -3444,6 +3447,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 AppEvent::Tick => {
                     app.tick_count += 1;
                     app.update_status_decay();
+                    
+                    if let Some(last) = app.last_auto_refresh {
+                        if last.elapsed() >= Duration::from_secs(300) {
+                            app.last_auto_refresh = Some(Instant::now());
+                            if !app.is_loading && !app.accounts.is_empty() {
+                                app.is_loading = true;
+                                app.set_status("Auto-refreshing quotas for all accounts (5 min interval)...");
+                                spawn_network_task(
+                                    event_tx.clone(),
+                                    None,
+                                    app.accounts.clone(),
+                                    app.cli_cache.clone(),
+                                    app.warmup_history.clone(),
+                                    "quota_all",
+                                    None,
+                                    false,
+                                    None,
+                                );
+                            }
+                        }
+                    } else {
+                        app.last_auto_refresh = Some(Instant::now());
+                    }
                 }
             }
         }
