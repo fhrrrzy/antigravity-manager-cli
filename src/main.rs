@@ -1133,17 +1133,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             app.set_status(&format!("Sorted accounts by: {} ({})", app.sort_mode.to_str(), dir_str));
                                         }
                                     }
-                                } else if mouse.row >= table_area.y + 2 {
+                                } else if mouse.row >= table_area.y + 3 {
                                     let col_idx = app.get_column_index(mouse.column, table_area);
-                                    let clicked_idx = app.list_state.offset() + ((mouse.row - (table_area.y + 2)) / 3) as usize;
+                                    let rel_row = (mouse.row - (table_area.y + 3)) as usize;
+                                    let clicked_idx = app.list_state.offset() + (rel_row / 3);
+                                    let within_row_text = (rel_row % 3) < 2; // only row lines 0 and 1 have text, line 2 is margin spacing!
                                     
-                                    let clicked_account = {
+                                    let clicked_account = if within_row_text {
                                         let visible = app.get_visible_accounts();
                                         if clicked_idx < visible.len() {
                                             Some((*visible[clicked_idx]).clone())
                                         } else {
                                             None
                                         }
+                                    } else {
+                                        None
                                     };
                                     
                                     if let Some(acc) = clicked_account {

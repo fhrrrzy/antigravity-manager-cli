@@ -335,18 +335,22 @@ impl App {
         }
 
         let inner_width = if area.width > 2 { area.width - 2 } else { return None; };
+        let rel_x = col_x.saturating_sub(area.x + 1);
+        let pct_click = ((rel_x as f32 / inner_width as f32) * 100.0).round() as u32;
         
-        let percentages = [8, 32, 15, 15, 15, 15];
-        let mut cur_x = area.x + 1;
-        
-        for (idx, &pct) in percentages.iter().enumerate() {
-            let w = ((inner_width as u32 * pct) / 100) as u16;
-            if col_x >= cur_x && col_x < cur_x + w {
-                return Some(idx);
-            }
-            cur_x += w;
+        if pct_click < 8 {
+            Some(0)
+        } else if pct_click < 40 {
+            Some(1)
+        } else if pct_click < 55 {
+            Some(2)
+        } else if pct_click < 70 {
+            Some(3)
+        } else if pct_click < 85 {
+            Some(4)
+        } else {
+            Some(5)
         }
-        None
     }
 
     pub fn get_visible_themes(&self) -> Vec<ThemeType> {
