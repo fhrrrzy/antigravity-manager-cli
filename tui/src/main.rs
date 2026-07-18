@@ -787,7 +787,7 @@ async fn async_trigger_warmup(access_token: &str, model_name: &str, project_id: 
 async fn ensure_valid_token(email: &str, refresh_token: &str, cli_cache: &mut CliCache) -> Option<(String, Option<String>)> {
     let now = chrono::Utc::now().timestamp();
     if let Some(tc) = cli_cache.tokens.get(email) {
-        if tc.expiry_timestamp > now + 300 {
+        if tc.expiry_timestamp > now + 900 {
             return Some((tc.access_token.clone(), tc.project_id.clone()));
         }
     }
@@ -1456,6 +1456,7 @@ async fn cli_switch(accounts: &[Account], identifier: &str) {
                     if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&cleaned) {
                         if let Some(obj) = val.as_object_mut() {
                             obj.insert("current_account_id".to_string(), json!(acc_id));
+                            obj.insert("current_target_ide".to_string(), json!("agy"));
                             if let Ok(new_content) = serde_json::to_string_pretty(&val) {
                                 let _ = fs::write(&index_path, new_content);
                             }
@@ -2501,7 +2502,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         KeyCode::Char('l') => {
                             if !app.is_loading {
                                 let auth_url = format!(
-                                    "https://accounts.google.com/o/oauth2/v2/auth?client_id={}&redirect_uri=http://localhost:{}&response_type=code&scope=email+profile&access_type=offline&prompt=consent",
+                                    "https://accounts.google.com/o/oauth2/v2/auth?client_id={}&redirect_uri=http://localhost:{}&response_type=code&scope=openid%20https://www.googleapis.com/auth/cloud-platform%20https://www.googleapis.com/auth/userinfo.email%20https://www.googleapis.com/auth/userinfo.profile%20https://www.googleapis.com/auth/cclog%20https://www.googleapis.com/auth/experimentsandconfigs&access_type=offline&prompt=consent",
                                     CLIENT_ID, OAUTH_PORT
                                 );
                                 
@@ -2552,6 +2553,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             app.active_email = Some(email.clone());
                             app.cli_cache.active_email = Some(email.clone());
                             save_cli_cache(&app.cli_cache);
+                            
+                            if let Some(acc) = app.accounts.iter().find(|a| a.email == email) {
+                                if let Some(ref acc_id) = acc.id {
+                                    let data_dir = get_data_dir();
+                                    let index_path = data_dir.join("accounts.json");
+                                    if index_path.exists() {
+                                        if let Ok(content) = fs::read_to_string(&index_path) {
+                                            let cleaned = content.replace("\u{feff}", "").replace('\x00', "");
+                                            if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&cleaned) {
+                                                if let Some(obj) = val.as_object_mut() {
+                                                    obj.insert("current_account_id".to_string(), json!(acc_id));
+                                                    obj.insert("current_target_ide".to_string(), json!("agy"));
+                                                    if let Ok(new_content) = serde_json::to_string_pretty(&val) {
+                                                        let _ = fs::write(&index_path, new_content);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             
                             if keyring_success {
                                 app.set_status(&format!("Account changed to {}. Keyring credentials written successfully.", email));
