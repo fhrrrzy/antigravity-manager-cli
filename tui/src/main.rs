@@ -190,6 +190,10 @@ struct App {
     search_query: String,
     is_searching: bool,
     tick_count: u64,
+    compact_mode: bool,
+    log_history: Vec<String>,
+    show_logs: bool,
+    log_state: ListState,
 }
 
 impl App {
@@ -200,6 +204,8 @@ impl App {
         }
         let mut breakdown_state = ListState::default();
         breakdown_state.select(Some(0));
+        let mut log_state = ListState::default();
+        log_state.select(Some(0));
         
         let mut app = Self {
             accounts,
@@ -220,6 +226,10 @@ impl App {
             search_query: String::new(),
             is_searching: false,
             tick_count: 0,
+            compact_mode: false,
+            log_history: vec!["Welcome to Antigravity TUI Manager!".to_string()],
+            show_logs: false,
+            log_state,
         };
         app.sort_accounts();
         app
@@ -413,6 +423,17 @@ impl App {
     }
 
     fn set_status(&mut self, msg: &str) {
+        let trimmed = msg.trim().to_string();
+        if !trimmed.is_empty() {
+            self.log_history.push(format!(
+                "[{}] {}",
+                chrono::Local::now().format("%H:%M:%S"),
+                trimmed
+            ));
+            if self.log_history.len() > 100 {
+                self.log_history.remove(0);
+            }
+        }
         self.status_message = msg.to_string();
         self.status_time = Some(Instant::now());
     }
@@ -2339,12 +2360,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut app = App::new(accounts, db_path, db_desc, active_email, cache, history);
 
     if let Some(ref email) = app.active_email {
-        if !app.cli_cache.quotas.contains_key(email) && !app.accounts.is_empty() {
-            if let Some(acc) = app.accounts.iter().find(|a| a.email == *email).cloned() {
-                app.is_loading = true;
-                app.set_status(&format!("Auto-fetching initial quota for {}...", email));
-                spawn_network_task(event_tx.clone(), Some(acc), Vec::new(), app.cli_cache.clone(), app.warmup_history.clone(), "quota", None, false, None);
-            }
+        if let Some(acc) = app.accounts.iter().find(|a| a.email == *email).cloned() {
+            app.is_loading = true;
+            app.set_status(&format!("Auto-verifying session validation for {}...", email));
+            spawn_network_task(
+                event_tx.clone(),
+                Some(acc),
+                Vec::new(),
+                app.cli_cache.clone(),
+                app.warmup_history.clone(),
+                "switch",
+                None,
+                false,
+                None,
+            );
         }
     }
 
@@ -2378,9 +2407,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ])
                 .split(chunks[1]);
 
-            let header_cells = ["Active", "Email", "Gemini Quota", "Claude Quota", "5h Reset", "Weekly Reset"]
-                .iter()
-                .map(|h| Cell::from(*h).style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
+            let headers_list = if app.compact_mode {
+                vec!["Active", "Email", "Gemini", "Claude"]
+            } else {
+                vec!["Active", "Email", "Gemini Quota", "Claude Quota", "5h Reset", "Weekly Reset"]
+            };
+            let header_cells = headers_list.iter().map(|h| Cell::from(*h).style(Style::default().fg(Color::Rgb(122, 168, 159)).add_modifier(Modifier::BOLD)));
             let header = Row::new(header_cells)
                 .style(Style::default().bg(Color::Rgb(30, 30, 45)))
                 .height(1)
@@ -2453,25 +2485,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         Style::default().fg(Color::Rgb(220, 215, 186))
                     };
 
-                    Row::new(vec![
+                    let mut cells = vec![
                         Cell::from(active_mark).style(if is_active { Style::default().fg(Color::Rgb(138, 154, 134)) } else { Style::default() }),
                         Cell::from(acc.email.clone()).style(row_style),
                         Cell::from(gemini_bar).style(Style::default().fg(gemini_color)),
                         Cell::from(claude_bar).style(Style::default().fg(claude_color)),
-                        Cell::from(five_h_reset).style(Style::default().fg(Color::Rgb(139, 164, 177))),
-                        Cell::from(weekly_reset).style(Style::default().fg(Color::Rgb(147, 138, 169))),
-                    ])
+                    ];
+                    if !app.compact_mode {
+                        cells.push(Cell::from(five_h_reset).style(Style::default().fg(Color::Rgb(139, 164, 177))));
+                        cells.push(Cell::from(weekly_reset).style(Style::default().fg(Color::Rgb(147, 138, 169))));
+                    }
+                    Row::new(cells)
                 })
                 .collect();
 
-            let widths = [
-                Constraint::Length(8),
-                Constraint::Percentage(30),
-                Constraint::Percentage(18),
-                Constraint::Percentage(18),
-                Constraint::Percentage(13),
-                Constraint::Percentage(13),
-            ];
+            let widths: &[Constraint] = if app.compact_mode {
+                &[
+                    Constraint::Length(8),
+                    Constraint::Percentage(44),
+                    Constraint::Percentage(24),
+                    Constraint::Percentage(24),
+                ]
+            } else {
+                &[
+                    Constraint::Length(8),
+                    Constraint::Percentage(30),
+                    Constraint::Percentage(18),
+                    Constraint::Percentage(18),
+                    Constraint::Percentage(13),
+                    Constraint::Percentage(13),
+                ]
+            };
 
             let table_border_color = if app.focused_panel == Focus::Accounts { Color::Rgb(122, 168, 159) } else { Color::Rgb(84, 84, 96) };
             let table_title = if app.is_searching {
@@ -2627,44 +2671,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "".to_string()
             };
             let status_block = Paragraph::new(format!("{}{}", loader_prefix, app.status_message))
-                .block(Block::default().borders(Borders::ALL).title(" Logger Console ").style(Style::default().fg(Color::Green)))
+                .block(Block::default().borders(Borders::ALL).title(" Logger Console ").style(Style::default().fg(Color::Rgb(138, 154, 134))))
                 .wrap(Wrap { trim: true });
             f.render_widget(status_block, chunks[2]);
 
-            let footer = Paragraph::new(" [Enter] Switch | [r] Refresh | [w] Warm Up | [Tab] Focus | [s] Sort | [h] Help | [q] Quit")
-                .style(Style::default().fg(Color::DarkGray));
+            let footer = Paragraph::new(" [Enter] Switch | [r] Refresh | [w] Warm Up | [/] Find | [s] Sort | [c] Compact | [v] Logs | [h] Help")
+                .style(Style::default().fg(Color::Rgb(114, 114, 114)));
             f.render_widget(footer, chunks[3]);
 
             if app.show_help {
                 let block = Block::default()
                     .title(" Keyboard Help Guide ")
                     .borders(Borders::ALL)
-                    .style(Style::default().bg(Color::Rgb(20, 20, 35)).fg(Color::Cyan));
+                    .style(Style::default().bg(Color::Rgb(20, 20, 35)).fg(Color::Rgb(122, 168, 159)));
                 
-                let area = centered_rect(65, 55, f.size());
+                let area = centered_rect(65, 58, f.size());
                 f.render_widget(Clear, area);
                 f.render_widget(block, area);
 
                 let help_text = vec![
-                    Line::from(vec![Span::styled("Navigation & Layout:", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))]),
+                    Line::from(vec![Span::styled("Navigation & Layout:", Style::default().fg(Color::Rgb(196, 178, 138)).add_modifier(Modifier::BOLD))]),
                     Line::from(vec![Span::raw("  Tab           Switch panel focus (Accounts Table <-> Quotas Breakdown)")]),
                     Line::from(vec![Span::raw("  j / Down      Select next item in active panel")]),
                     Line::from(vec![Span::raw("  k / Up        Select previous item in active panel")]),
                     Line::from(vec![Span::raw("  s             Cycle table sorting (Email -> Gemini -> Claude -> 5h -> Weekly")]),
+                    Line::from(vec![Span::raw("  /             Search / Filter accounts by typing email address")]),
+                    Line::from(vec![Span::raw("  c             Toggle Compact layout view (hides reset countdowns for tablet/portrait)")]),
+                    Line::from(vec![Span::raw("  v             Open scrollable Session Logs History Explorer overlay")]),
                     Line::from(vec![Span::raw("  Enter         Activate/Switch session to selected account")]),
                     Line::from(vec![Span::raw("")]),
-                    Line::from(vec![Span::styled("Quota & Session actions:", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))]),
+                    Line::from(vec![Span::styled("Quota & Session actions:", Style::default().fg(Color::Rgb(196, 178, 138)).add_modifier(Modifier::BOLD))]),
                     Line::from(vec![Span::raw("  r             Refresh selected account's Google API quotas")]),
                     Line::from(vec![Span::raw("  R             Batch refresh ALL accounts' quotas (asynchronously)")]),
                     Line::from(vec![Span::raw("  w             Trigger smart warm up sequence for selected account")]),
                     Line::from(vec![Span::raw("  W             Trigger smart warm up sequence for ALL accounts")]),
                     Line::from(vec![Span::raw("  f             Force warm up selected account (ignores cooldowns)")]),
                     Line::from(vec![Span::raw("")]),
-                    Line::from(vec![Span::styled("Account Management:", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))]),
+                    Line::from(vec![Span::styled("Account Management:", Style::default().fg(Color::Rgb(196, 178, 138)).add_modifier(Modifier::BOLD))]),
                     Line::from(vec![Span::raw("  a             Add custom account with manual refresh token")]),
                     Line::from(vec![Span::raw("  l             Login via Google OAuth browser integration link")]),
+                    Line::from(vec![Span::raw("  d / Backspace Open account deletion confirmation prompt")]),
                     Line::from(vec![Span::raw("")]),
-                    Line::from(vec![Span::styled("Press [h], [Esc] or [q] to close this help guide", Style::default().fg(Color::Green))]),
+                    Line::from(vec![Span::styled("Press [h], [Esc] or [q] to close this help guide", Style::default().fg(Color::Rgb(138, 154, 134)))]),
                 ];
 
                 let help_para = Paragraph::new(help_text)
@@ -2804,6 +2852,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let prompt = Paragraph::new(" [y] Yes, Delete Account  |  [n] No, Cancel (Esc)")
                     .style(Style::default().fg(Color::DarkGray));
                 f.render_widget(prompt, modal_chunks[2]);
+            }
+
+            if app.show_logs {
+                let block = Block::default()
+                    .title(" Session Logs History Explorer ")
+                    .borders(Borders::ALL)
+                    .style(Style::default().bg(Color::Rgb(20, 20, 30)).fg(Color::Rgb(122, 168, 159)));
+                
+                let area = centered_rect(80, 70, f.size());
+                f.render_widget(Clear, area);
+                f.render_widget(block, area);
+
+                let list_chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Min(1),
+                        Constraint::Length(1),
+                    ])
+                    .margin(2)
+                    .split(area);
+
+                let log_items: Vec<ListItem> = app.log_history.iter().map(|log| {
+                    ListItem::new(Line::from(vec![
+                        Span::raw(log.clone())
+                    ]))
+                }).collect();
+
+                let list_widget = List::new(log_items)
+                    .highlight_style(Style::default().bg(Color::Rgb(42, 42, 53)).add_modifier(Modifier::BOLD));
+                f.render_stateful_widget(list_widget, list_chunks[0], &mut app.log_state);
+
+                let tips = Paragraph::new(" [Esc/q/v] Close Logs Explorer  |  [j/k, Up/Down] Scroll History")
+                    .style(Style::default().fg(Color::Rgb(114, 114, 114)));
+                f.render_widget(tips, list_chunks[1]);
             }
         })?;
 
@@ -2961,6 +3043,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
 
+                    if app.show_logs {
+                        match key.code {
+                            KeyCode::Char('v') | KeyCode::Char('V') | KeyCode::Char('q') | KeyCode::Esc => {
+                                app.show_logs = false;
+                                app.set_status("Closed session logs explorer.");
+                            }
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                if !app.log_history.is_empty() {
+                                    let i = match app.log_state.selected() {
+                                        Some(i) => {
+                                            if i >= app.log_history.len() - 1 {
+                                                0
+                                            } else {
+                                                i + 1
+                                            }
+                                        }
+                                        None => 0,
+                                    };
+                                    app.log_state.select(Some(i));
+                                }
+                            }
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                if !app.log_history.is_empty() {
+                                    let i = match app.log_state.selected() {
+                                        Some(i) => {
+                                            if i == 0 {
+                                                app.log_history.len() - 1
+                                            } else {
+                                                i - 1
+                                            }
+                                        }
+                                        None => 0,
+                                    };
+                                    app.log_state.select(Some(i));
+                                }
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+
                     if app.show_help {
                         match key.code {
                             KeyCode::Char('h') | KeyCode::Char('q') | KeyCode::Esc => {
@@ -2983,6 +3106,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         KeyCode::Char('h') => {
                             if !app.is_loading {
                                 app.show_help = true;
+                            }
+                        }
+                        KeyCode::Char('c') | KeyCode::Char('C') => {
+                            if !app.is_loading {
+                                app.compact_mode = !app.compact_mode;
+                                let status = if app.compact_mode { "Compact Layout Mode enabled." } else { "Full Layout Mode enabled." };
+                                app.set_status(status);
+                            }
+                        }
+                        KeyCode::Char('v') | KeyCode::Char('V') => {
+                            if !app.is_loading {
+                                app.show_logs = true;
+                                if !app.log_history.is_empty() {
+                                    app.log_state.select(Some(app.log_history.len() - 1));
+                                }
+                                app.set_status("Viewing complete session logs history.");
                             }
                         }
                         KeyCode::Char('q') | KeyCode::Esc => {
