@@ -95,6 +95,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 cli::cli_warmup(&accounts, active_email.as_deref(), identifier, model.as_deref(), force).await;
             }
+            "add" => {
+                cli::cli_add().await;
+            }
+            "status" => {
+                let mut is_json = false;
+                for arg in args.iter().skip(2) {
+                    if arg == "--json" {
+                        is_json = true;
+                    }
+                }
+                cli::cli_status(is_json);
+            }
+            "daemon" => {
+                let mut quota = "gemini".to_string();
+                let mut interval = 900;
+                let mut skip = false;
+                for (i, arg) in args.iter().enumerate().skip(2) {
+                    if skip {
+                        skip = false;
+                        continue;
+                    }
+                    if arg == "--quota" {
+                        if i + 1 < args.len() {
+                            quota = args[i + 1].clone();
+                            skip = true;
+                        } else {
+                            eprintln!("Error: --quota requires a value (gemini/claude/either).");
+                            std::process::exit(1);
+                        }
+                    } else if arg == "--interval" {
+                        if i + 1 < args.len() {
+                            if let Ok(sec) = args[i + 1].parse::<u64>() {
+                                interval = sec;
+                            }
+                            skip = true;
+                        } else {
+                            eprintln!("Error: --interval requires a value in seconds.");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                cli::cli_daemon(&accounts, &quota, interval).await;
+            }
             "backup" => {
                 let filepath = args.get(2).map(|s| s.as_str());
                 cli::cli_backup(&accounts, filepath);
@@ -111,7 +154,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Usage:");
                 println!("  agm                   Launch interactive terminal user interface (TUI)");
                 println!("  agm list [--json]     List configured accounts (use --json for raw data)");
-                println!("  agm switch <id>       Switch the active account manually");
+                println!("  agm add               Interactively add a new account and refresh token");
+                println!("  agm status [--json]   Get active account status and quotas (for tmux/sketchybar/prompts)");
+                println!("  agm daemon run [...]  Start background failover daemon (--quota gemini/claude/either, --interval secs)");
+                println!("  agm switch [id]       Switch the active account (runs interactive selector if no ID given)");
                 println!("  agm auto-switch       Automatically switch to the healthiest/fullest standby account");
                 println!("  agm quota [id] [-r]   Display quotas (use --refresh to update, --json for raw data)");
                 println!("  agm quota all [-r]    Display/Refresh quotas for ALL accounts");
@@ -121,6 +167,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  agm restore <path>    Restore accounts from a JSON backup file");
                 println!("\nExamples:");
                 println!("  agm switch 3");
+                println!("  agm switch");
+                println!("  agm add");
+                println!("  agm status");
+                println!("  agm daemon run --quota gemini --interval 300");
                 println!("  agm auto-switch");
                 println!("  agm quota all --refresh --json");
                 println!("  agm warmup all");

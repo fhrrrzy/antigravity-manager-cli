@@ -910,3 +910,276 @@ pub async fn cli_warmup(accounts: &[Account], active_email: Option<&str>, identi
     }
     println!("Warmup cycle finished. Triggered {} warmup(s).", count);
 }
+
+fn read_password(prompt: &str) -> Result<String, String> {
+    use crossterm::{
+        terminal::{enable_raw_mode, disable_raw_mode},
+        event::{self, Event, KeyCode},
+    };
+    use std::io::{self, Write};
+
+    print!("{}", prompt);
+    let _ = io::stdout().flush();
+
+    if let Err(_) = enable_raw_mode() {
+        let mut input = String::new();
+        io::stdin().read_line(&mut input).map_err(|e| e.to_string())?;
+        return Ok(input.trim().to_string());
+    }
+
+    let mut pass = String::new();
+    loop {
+        if let Ok(Event::Key(key)) = event::read() {
+            match key.code {
+                KeyCode::Char(c) => {
+                    pass.push(c);
+                    print!("*");
+                    let _ = io::stdout().flush();
+                }
+                KeyCode::Backspace => {
+                    if !pass.is_empty() {
+                        pass.pop();
+                        print!("\x08 \x08");
+                        let _ = io::stdout().flush();
+                    }
+                }
+                KeyCode::Enter => {
+                    break;
+                }
+                KeyCode::Esc => {
+                    let _ = disable_raw_mode();
+                    println!();
+                    return Err("Input cancelled".to_string());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let _ = disable_raw_mode();
+    println!();
+    Ok(pass.trim().to_string())
+}
+
+pub async fn cli_add() {
+    use std::io::{self, Write};
+    
+    print!("Enter email address: ");
+    let _ = io::stdout().flush();
+    let mut email = String::new();
+    if io::stdin().read_line(&mut email).is_err() {
+        eprintln!("Error reading email.");
+        return;
+    }
+    let email = email.trim().to_string();
+    if email.is_empty() {
+        eprintln!("Email cannot be empty.");
+        return;
+    }
+    
+    let refresh_token = match read_password("Enter Google OAuth refresh token: ") {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            return;
+        }
+    };
+    if refresh_token.is_empty() {
+        eprintln!("Refresh token cannot be empty.");
+        return;
+    }
+    
+    println!("Validating credentials with Google API...");
+    let mut cache = load_cli_cache();
+    if let Some((access_token, _project_id)) = crate::google_api::ensure_valid_token(&email, &refresh_token, &mut cache).await {
+        let db_path = get_data_dir().join("accounts.json");
+        if let Err(e) = add_account_to_db(&db_path, &email, &refresh_token) {
+            eprintln!("Error adding account to database: {}", e);
+            return;
+        }
+        
+        let expiry = cache.tokens.get(&email).map(|t| t.expiry_timestamp).unwrap_or(0);
+        let _ = write_to_system_keyring(&email, &access_token, &refresh_token, expiry);
+        write_oauth_token_file(&access_token, &refresh_token, expiry);
+        
+        println!("✓ Account added successfully!");
+        println!("  Email: {}", email);
+        println!("  Plan: {}", cache.tokens.get(&email).and_then(|t| t.subscription_tier.as_deref()).unwrap_or("Free"));
+    } else {
+        eprintln!("Error: Google API credential validation failed. Check your refresh token.");
+    }
+}
+
+pub fn cli_status(is_json: bool) {
+    let cache = load_cli_cache();
+    let active = match &cache.active_email {
+        Some(e) => e,
+        None => {
+            if is_json {
+                println!("{{}}");
+            } else {
+                println!("○ No Active Session");
+            }
+            return;
+        }
+    };
+    
+    let masked_email = crate::tui::ui::mask_email(active, true);
+    let quota = cache.quotas.get(active);
+    
+    let gemini_5h = quota.and_then(|q| {
+        q.models.iter()
+            .find(|m| m.name.contains("gemini") || m.display_name.as_ref().map(|n| n.contains("Gemini")).unwrap_or(false))
+            .map(|m| m.percentage)
+    });
+    
+    let claude_5h = quota.and_then(|q| {
+        q.models.iter()
+            .find(|m| m.name.contains("claude") || m.display_name.as_ref().map(|n| n.contains("Claude")).unwrap_or(false))
+            .map(|m| m.percentage)
+    });
+
+    let get_weekly = |is_claude: bool| -> Option<i32> {
+        let q = quota?;
+        let groups = q.quota_groups.as_ref()?;
+        for group in groups {
+            let gp_name = group.display_name.to_lowercase();
+            let target_match = if is_claude {
+                gp_name.contains("claude") || gp_name.contains("anthropic")
+            } else {
+                gp_name.contains("gemini") || gp_name.contains("google")
+            };
+            
+            for bucket in &group.buckets {
+                let b_id = bucket.bucket_id.to_lowercase();
+                let b_disp = bucket.display_name.as_ref().map(|s| s.to_lowercase()).unwrap_or_default();
+                let is_weekly = bucket.window == "weekly" || b_id.contains("weekly") || b_disp.contains("weekly");
+                
+                let name_match = target_match 
+                    || (is_claude && (b_id.contains("claude") || b_disp.contains("claude")))
+                    || (!is_claude && (b_id.contains("gemini") || b_disp.contains("gemini")));
+                    
+                if is_weekly && name_match {
+                    return Some((bucket.remaining_fraction * 100.0).round() as i32);
+                }
+            }
+        }
+        None
+    };
+
+    let gemini_wk = get_weekly(false);
+    let claude_wk = get_weekly(true);
+    
+    let plan = quota.and_then(|q| q.subscription_tier.as_deref())
+        .or_else(|| cache.tokens.get(active).and_then(|t| t.subscription_tier.as_deref()))
+        .unwrap_or("Free");
+        
+    let health = cache.health.get(active);
+    let is_healthy = health.map(|h| h.consecutive_failures == 0).unwrap_or(true);
+    
+    if is_json {
+        let out = json!({
+            "active_email": masked_email,
+            "plan": plan,
+            "gemini_5h": gemini_5h,
+            "gemini_wk": gemini_wk,
+            "claude_5h": claude_5h,
+            "claude_wk": claude_wk,
+            "healthy": is_healthy
+        });
+        println!("{}", serde_json::to_string(&out).unwrap_or_default());
+    } else {
+        let status_mark = if is_healthy { "●" } else { "⚠" };
+        let gemini_fmt = gemini_5h.map(|p| format!("{}%", p)).unwrap_or_else(|| "N/A".to_string());
+        let claude_fmt = claude_5h.map(|p| format!("{}%", p)).unwrap_or_else(|| "N/A".to_string());
+        println!("{} {} [{}] | Gemini: {} | Claude: {}", status_mark, masked_email, plan, gemini_fmt, claude_fmt);
+    }
+}
+
+pub async fn cli_daemon(accounts: &[Account], quota_target: &str, interval_secs: u64) {
+    println!("[DAEMON] Starting Antigravity Manager Failover Daemon...");
+    println!("[DAEMON] Target Quota: {}", quota_target);
+    println!("[DAEMON] Refresh Interval: {}s", interval_secs);
+    
+    loop {
+        let mut cache = load_cli_cache();
+        if let Some(active_email) = &cache.active_email {
+            println!("[DAEMON] Checking health and quotas for active email: {}...", active_email);
+            
+            if let Some(acc) = accounts.iter().find(|a| a.email == *active_email) {
+                match crate::google_api::ensure_valid_token(&acc.email, &acc.refresh_token, &mut cache).await {
+                    Some((access_token, project_id)) => {
+                        match crate::google_api::async_fetch_quota(&access_token, project_id.as_deref()).await {
+                            Ok(models) => {
+                                cache.quotas.insert(acc.email.clone(), QuotaData {
+                                    subscription_tier: cache.tokens.get(&acc.email).and_then(|t| t.subscription_tier.clone()),
+                                    models: models.clone(),
+                                    quota_groups: None,
+                                });
+                                save_cli_cache(&cache);
+                                
+                                let mut trigger_failover = false;
+                                
+                                let gemini_pct = models.iter()
+                                    .find(|m| m.name.contains("gemini") || m.display_name.as_ref().map(|n| n.contains("Gemini")).unwrap_or(false))
+                                    .map(|m| m.percentage)
+                                    .unwrap_or(-1);
+                                    
+                                let claude_pct = models.iter()
+                                    .find(|m| m.name.contains("claude") || m.display_name.as_ref().map(|n| n.contains("Claude")).unwrap_or(false))
+                                    .map(|m| m.percentage)
+                                    .unwrap_or(-1);
+                                    
+                                match quota_target.to_lowercase().as_str() {
+                                    "gemini" => {
+                                        if gemini_pct == 0 {
+                                            println!("[DAEMON] Gemini quota is exhausted (0%). Triggering failover...");
+                                            trigger_failover = true;
+                                        }
+                                    }
+                                    "claude" => {
+                                        if claude_pct == 0 {
+                                            println!("[DAEMON] Claude quota is exhausted (0%). Triggering failover...");
+                                            trigger_failover = true;
+                                        }
+                                    }
+                                    _ => {
+                                        if gemini_pct == 0 || claude_pct == 0 {
+                                            println!("[DAEMON] Quota exhausted (Gemini: {}%, Claude: {}%). Triggering failover...", gemini_pct, claude_pct);
+                                            trigger_failover = true;
+                                        }
+                                    }
+                                }
+                                
+                                if trigger_failover {
+                                    println!("[DAEMON] Automatically switching to the healthiest account...");
+                                    cli_auto_switch(accounts, Some(&acc.email)).await;
+                                } else {
+                                    println!(
+                                        "[DAEMON] Active account is healthy. Quotas: Gemini: {}%, Claude: {}%",
+                                        if gemini_pct >= 0 { format!("{}%", gemini_pct) } else { "N/A".to_string() },
+                                        if claude_pct >= 0 { format!("{}%", claude_pct) } else { "N/A".to_string() }
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("[DAEMON] Error fetching quotas: {}", e);
+                            }
+                        }
+                    }
+                    None => {
+                        eprintln!("[DAEMON] Active token refresh failed. Triggering failover to healthy account...");
+                        cli_auto_switch(accounts, Some(&acc.email)).await;
+                    }
+                }
+            } else {
+                eprintln!("[DAEMON] Warning: Active email '{}' not found in database accounts list.", active_email);
+            }
+        } else {
+            println!("[DAEMON] No active email session set. Running auto-switch to select initial account...");
+            cli_auto_switch(accounts, None).await;
+        }
+        
+        tokio::time::sleep(Duration::from_secs(interval_secs)).await;
+    }
+}
