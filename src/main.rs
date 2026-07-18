@@ -21,7 +21,7 @@ use ratatui::{
 };
 use serde_json::json;
 
-use types::{AppEvent, InputMode, Focus, SortMode, NetworkResult, AddAccountAction};
+use types::{AppEvent, InputMode, Focus, SortMode, NetworkResult, AddAccountAction, LayoutPreset};
 use config::{load_accounts_list, get_active_email, load_cli_cache, load_warmup_history, get_data_dir, save_cli_cache, delete_account_from_db};
 use tui::{App, spawn_network_task, ui::draw_ui};
 
@@ -568,12 +568,102 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
 
+                    if app.show_layout_menu {
+                        let visible_layouts = vec![
+                            LayoutPreset::BothFullList,
+                            LayoutPreset::BothWithDetails,
+                            LayoutPreset::GeminiFullList,
+                            LayoutPreset::GeminiWithDetails,
+                            LayoutPreset::ClaudeFullList,
+                            LayoutPreset::ClaudeWithDetails,
+                        ];
+
+                        match key.code {
+                            KeyCode::Esc | KeyCode::Char('o') | KeyCode::Char('O') => {
+                                app.show_layout_menu = false;
+                                if let Some(orig) = app.original_layout_preset {
+                                    app.layout_preset = orig;
+                                }
+                                app.set_status("Layout preset selector closed (cancelled).");
+                            }
+                            KeyCode::Enter => {
+                                if let Some(idx) = app.layout_menu_state.selected() {
+                                    if let Some(&selected_preset) = visible_layouts.get(idx) {
+                                        app.layout_preset = selected_preset;
+                                        app.cli_cache.layout_preset = Some(match selected_preset {
+                                            LayoutPreset::BothFullList => "BothFullList".to_string(),
+                                            LayoutPreset::BothWithDetails => "BothWithDetails".to_string(),
+                                            LayoutPreset::GeminiFullList => "GeminiFullList".to_string(),
+                                            LayoutPreset::GeminiWithDetails => "GeminiWithDetails".to_string(),
+                                            LayoutPreset::ClaudeFullList => "ClaudeFullList".to_string(),
+                                            LayoutPreset::ClaudeWithDetails => "ClaudeWithDetails".to_string(),
+                                        });
+                                        let _ = save_cli_cache(&app.cli_cache);
+                                        app.show_layout_menu = false;
+                                        app.set_status(&format!("Successfully saved layout preset: {}", selected_preset.to_str()));
+                                    }
+                                }
+                            }
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                if !visible_layouts.is_empty() {
+                                    let i = match app.layout_menu_state.selected() {
+                                        Some(i) => {
+                                            if i >= visible_layouts.len() - 1 {
+                                                0
+                                            } else {
+                                                i + 1
+                                            }
+                                        }
+                                        None => 0,
+                                    };
+                                    app.layout_menu_state.select(Some(i));
+                                    if let Some(&selected_preset) = visible_layouts.get(i) {
+                                        app.layout_preset = selected_preset;
+                                    }
+                                }
+                            }
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                if !visible_layouts.is_empty() {
+                                    let i = match app.layout_menu_state.selected() {
+                                        Some(i) => {
+                                            if i == 0 {
+                                                visible_layouts.len() - 1
+                                            } else {
+                                                i - 1
+                                            }
+                                        }
+                                        None => 0,
+                                    };
+                                    app.layout_menu_state.select(Some(i));
+                                    if let Some(&selected_preset) = visible_layouts.get(i) {
+                                        app.layout_preset = selected_preset;
+                                    }
+                                }
+                            }
+                            KeyCode::Char(c) if c.is_digit(10) => {
+                                let num = c.to_digit(10).unwrap_or(0) as usize;
+                                if num >= 1 && num <= visible_layouts.len() {
+                                    let idx = num - 1;
+                                    app.layout_menu_state.select(Some(idx));
+                                    if let Some(&selected_preset) = visible_layouts.get(idx) {
+                                        app.layout_preset = selected_preset;
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+
                     if app.show_theme_selector {
                         match key.code {
                             KeyCode::Esc | KeyCode::Char('t') | KeyCode::Char('T') => {
                                 app.show_theme_selector = false;
                                 app.theme_search_query.clear();
-                                app.set_status("Theme selector closed.");
+                                if let Some(orig) = app.original_theme {
+                                    app.theme = orig;
+                                }
+                                app.set_status("Theme selector closed (cancelled).");
                             }
                             KeyCode::Enter => {
                                 let visible = app.get_visible_themes();
@@ -659,7 +749,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             KeyCode::Char('q') => {
                                 if app.theme_search_query.is_empty() {
                                     app.show_theme_selector = false;
-                                    app.set_status("Theme selector closed.");
+                                    if let Some(orig) = app.original_theme {
+                                        app.theme = orig;
+                                    }
+                                    app.set_status("Theme selector closed (cancelled).");
                                 } else {
                                     app.theme_search_query.push('q');
                                     app.theme_list_state.select(Some(0));
@@ -670,6 +763,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 app.theme_list_state.select(Some(0));
                             }
                             _ => {}
+                        }
+                        
+                        // Apply preview in real-time
+                        let visible = app.get_visible_themes();
+                        if let Some(idx) = app.theme_list_state.selected() {
+                            if let Some(&selected_theme) = visible.get(idx) {
+                                app.theme = selected_theme;
+                            }
                         }
                         continue;
                     }
@@ -816,6 +917,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 app.theme_search_query.clear();
                                 app.theme_list_state.select(Some(0));
                                 app.set_status("Open Color Theme Selector. Use up/down arrow keys or type search query.");
+                            }
+                        }
+                        KeyCode::Char('o') | KeyCode::Char('O') => {
+                            if !app.is_loading {
+                                app.original_layout_preset = Some(app.layout_preset);
+                                app.show_layout_menu = true;
+                                let visible_layouts = vec![
+                                    LayoutPreset::BothFullList,
+                                    LayoutPreset::BothWithDetails,
+                                    LayoutPreset::GeminiFullList,
+                                    LayoutPreset::GeminiWithDetails,
+                                    LayoutPreset::ClaudeFullList,
+                                    LayoutPreset::ClaudeWithDetails,
+                                ];
+                                let current_idx = visible_layouts.iter()
+                                    .position(|l| *l == app.layout_preset)
+                                    .unwrap_or(0);
+                                app.layout_menu_state.select(Some(current_idx));
+                                app.set_status("Open Layout Preset Selector. Use Up/Down or 1-6 hotkeys.");
                             }
                         }
                         KeyCode::Char('b') | KeyCode::Char('B') => {
@@ -1051,6 +1171,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let modal_active = app.show_theme_selector 
                             || app.show_help 
                             || app.show_logs 
+                            || app.show_layout_menu
+                            || app.show_sort_menu
                             || !matches!(app.input_mode, InputMode::Normal);
                         
                         if !modal_active {
@@ -1064,66 +1186,70 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 ])
                                 .split(size);
 
-                            let content_chunks = Layout::default()
-                                .direction(Direction::Horizontal)
-                                .constraints([
-                                    Constraint::Percentage(60),
-                                    Constraint::Percentage(40),
-                                ])
-                                .split(chunks[1]);
-
-                            let table_area = content_chunks[0];
+                            let table_area = if app.layout_preset.is_full_list() {
+                                chunks[1]
+                            } else {
+                                let content_chunks = Layout::default()
+                                    .direction(Direction::Horizontal)
+                                    .constraints([
+                                        Constraint::Percentage(60),
+                                        Constraint::Percentage(40),
+                                    ])
+                                    .split(chunks[1]);
+                                content_chunks[0]
+                            };
                             
                             if mouse.column >= table_area.x && mouse.column < table_area.x + table_area.width {
                                 if mouse.row == table_area.y + 1 {
                                     if let Some(col_idx) = app.get_column_index(mouse.column, table_area) {
                                         if !app.is_loading {
-                                            match col_idx {
-                                                0 | 1 => {
-                                                    if app.sort_mode == SortMode::Email {
-                                                        app.sort_desc = !app.sort_desc;
-                                                    } else {
-                                                        app.sort_mode = SortMode::Email;
-                                                        app.sort_desc = false;
-                                                    }
-                                                }
+                                            let show_gemini = app.layout_preset.show_gemini();
+                                            let show_claude = app.layout_preset.show_claude();
+
+                                            let target_sort = match col_idx {
+                                                0 | 1 => Some(SortMode::Email),
                                                 2 => {
-                                                    if app.sort_mode == SortMode::Gemini5h {
-                                                        app.sort_desc = !app.sort_desc;
+                                                    if show_gemini {
+                                                        Some(SortMode::Gemini5h)
                                                     } else {
-                                                        app.sort_mode = SortMode::Gemini5h;
-                                                        app.sort_desc = false;
+                                                        Some(SortMode::Claude5h)
                                                     }
                                                 }
                                                 3 => {
-                                                    if app.sort_mode == SortMode::GeminiWeekly {
-                                                        app.sort_desc = !app.sort_desc;
+                                                    if show_gemini {
+                                                        Some(SortMode::GeminiWeekly)
                                                     } else {
-                                                        app.sort_mode = SortMode::GeminiWeekly;
-                                                        app.sort_desc = false;
+                                                        Some(SortMode::ClaudeWeekly)
                                                     }
                                                 }
                                                 4 => {
-                                                    if app.sort_mode == SortMode::Claude5h {
-                                                        app.sort_desc = !app.sort_desc;
+                                                    if show_gemini && show_claude {
+                                                        Some(SortMode::Claude5h)
                                                     } else {
-                                                        app.sort_mode = SortMode::Claude5h;
-                                                        app.sort_desc = false;
+                                                        None
                                                     }
                                                 }
                                                 5 => {
-                                                    if app.sort_mode == SortMode::ClaudeWeekly {
-                                                        app.sort_desc = !app.sort_desc;
+                                                    if show_gemini && show_claude {
+                                                        Some(SortMode::ClaudeWeekly)
                                                     } else {
-                                                        app.sort_mode = SortMode::ClaudeWeekly;
-                                                        app.sort_desc = false;
+                                                        None
                                                     }
                                                 }
-                                                _ => {}
+                                                _ => None,
+                                            };
+
+                                            if let Some(s_mode) = target_sort {
+                                                if app.sort_mode == s_mode {
+                                                    app.sort_desc = !app.sort_desc;
+                                                } else {
+                                                    app.sort_mode = s_mode;
+                                                    app.sort_desc = false;
+                                                }
+                                                app.sort_accounts();
+                                                let dir_str = if app.sort_desc { "descending" } else { "ascending" };
+                                                app.set_status(&format!("Sorted accounts by: {} ({})", app.sort_mode.to_str(), dir_str));
                                             }
-                                            app.sort_accounts();
-                                            let dir_str = if app.sort_desc { "descending" } else { "ascending" };
-                                            app.set_status(&format!("Sorted accounts by: {} ({})", app.sort_mode.to_str(), dir_str));
                                         }
                                     }
                                 } else if mouse.row >= table_area.y + 3 {

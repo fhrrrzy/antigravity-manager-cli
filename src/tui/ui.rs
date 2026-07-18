@@ -10,7 +10,7 @@ use ratatui::{
     }
 };
 
-use crate::types::{Focus, InputMode, QuotaData, COOLDOWN_SECONDS, SortMode};
+use crate::types::{Focus, InputMode, QuotaData, COOLDOWN_SECONDS, SortMode, LayoutPreset};
 use crate::tui::App;
 
 pub const SORT_OPTIONS: &[(&str, SortMode, bool)] = &[
@@ -208,14 +208,22 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
         Style::default().fg(palette.border_active).add_modifier(Modifier::BOLD)
     };
 
-    let header_cells = vec![
+    let mut header_cells = vec![
         Cell::from(col_health_text).style(col_health_style),
         Cell::from(col_email_text).style(col_email_style),
-        Cell::from(col_gemini5h_text).style(col_gemini5h_style),
-        Cell::from(col_geminiwk_text).style(col_geminiwk_style),
-        Cell::from(col_claude5h_text).style(col_claude5h_style),
-        Cell::from(col_claudewk_text).style(col_claudewk_style),
     ];
+
+    let show_gemini = app.layout_preset.show_gemini();
+    let show_claude = app.layout_preset.show_claude();
+
+    if show_gemini {
+        header_cells.push(Cell::from(col_gemini5h_text).style(col_gemini5h_style));
+        header_cells.push(Cell::from(col_geminiwk_text).style(col_geminiwk_style));
+    }
+    if show_claude {
+        header_cells.push(Cell::from(col_claude5h_text).style(col_claude5h_style));
+        header_cells.push(Cell::from(col_claudewk_text).style(col_claudewk_style));
+    }
     let header = Row::new(header_cells)
         .style(Style::default().bg(palette.selection_bg))
         .height(1)
@@ -450,25 +458,36 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
         ]));
 
         let top_row_style = Style::default().bg(row_bg).fg(if is_active { palette.green_success } else { palette.fg });
-        let top_cells = vec![
+        let mut top_cells = vec![
             Cell::from(active_mark).style(Style::default().fg(active_mark_color)),
             email_cell,
-            gemini_5h_cell,
-            gemini_wk_cell,
-            claude_5h_cell,
-            claude_wk_cell,
         ];
+        if show_gemini {
+            top_cells.push(gemini_5h_cell);
+            top_cells.push(gemini_wk_cell);
+        }
+        if show_claude {
+            top_cells.push(claude_5h_cell);
+            top_cells.push(claude_wk_cell);
+        }
         rows.push(Row::new(top_cells).style(top_row_style).height(2).bottom_margin(1));
     }
 
-    let widths: &[Constraint] = &[
+    let mut widths = vec![
         Constraint::Percentage(5),
         Constraint::Percentage(35),
-        Constraint::Percentage(15),
-        Constraint::Percentage(15),
-        Constraint::Percentage(15),
-        Constraint::Percentage(15),
     ];
+    if show_gemini {
+        widths.push(Constraint::Percentage(15));
+        widths.push(Constraint::Percentage(15));
+    }
+    if show_claude {
+        widths.push(Constraint::Percentage(15));
+        widths.push(Constraint::Percentage(15));
+    }
+    if !show_gemini || !show_claude {
+        widths[1] = Constraint::Percentage(65);
+    }
 
     let table_border_color = if app.focused_panel == Focus::Accounts { palette.border_active } else { palette.border_inactive };
     let table_title = if app.is_searching {
@@ -481,7 +500,7 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
         format!(" Accounts Summary (Sorted by: {}) | [/] Find ", app.sort_mode.to_str())
     };
 
-    let account_table = Table::new(rows, widths)
+    let account_table = Table::new(rows, &widths)
         .header(header)
         .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(table_title).style(Style::default().fg(table_border_color)))
         .highlight_style(Style::default());
@@ -497,6 +516,310 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
         .end_symbol(Some("▼"));
     f.render_stateful_widget(scrollbar, content_chunks[0], &mut scrollbar_state);
 
+    if !app.layout_preset.is_full_list() {
+        if let Some(selected_acc) = app.get_selected_account() {
+            let email = &selected_acc.email;
+            let token_cache = app.cli_cache.tokens.get(email);
+            let quota_cache = app.cli_cache.quotas.get(email);
+            
+            let project_id = token_cache.and_then(|t| t.project_id.as_deref()).unwrap_or("N/A");
+            let tier = quota_cache.and_then(|q| q.subscription_tier.as_deref()).unwrap_or(token_cache.and_then(|t| t.subscription_tier.as_deref()).unwrap_or("N/A"));
+
+            let is_highlight_active = app.active_email.as_ref() == Some(email);
+            let status_span = if is_highlight_active {
+                Span::styled(" ★ ACTIVE SESSION ", Style::default().bg(palette.green_success).fg(palette.bg).add_modifier(Modifier::BOLD))
+            } else {
+                Span::styled(" ○ INACTIVE ", Style::default().fg(palette.border_inactive))
+            };
+            
+            let mut header_text = vec![
+                Line::from(vec![Span::raw(" Email: "), Span::styled(mask_email(email, app.privacy_mode), Style::default().add_modifier(Modifier::BOLD))]),
+                Line::from(vec![Span::raw(" Subscription Tier: "), Span::styled(tier, Style::default().fg(palette.border_active))]),
+                Line::from(vec![Span::raw(" Project ID: "), Span::styled(project_id, Style::default().fg(palette.yellow_warning))]),
+                Line::from(vec![Span::raw(" Status: "), status_span]),
+            ];
+
+            let mut header_height = 5;
+            if let Some(health) = app.cli_cache.health.get(email) {
+                if health.consecutive_failures > 0 {
+                    if let Some(ref reason) = health.last_error {
+                        header_text.push(Line::from(vec![
+                            Span::styled(format!(" ⚠️ Error: {}", reason), Style::default().fg(palette.red_danger).add_modifier(Modifier::BOLD))
+                        ]));
+                        header_height = 6;
+                    }
+                }
+            }
+
+            let details_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(header_height),
+                    Constraint::Min(5),
+                ])
+                .split(content_chunks[1]);
+
+            let details_header = Paragraph::new(header_text)
+                .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Account Profile ").style(Style::default().fg(palette.border_inactive)));
+            f.render_widget(details_header, details_chunks[0]);
+
+            if app.is_loading {
+                let loading_msg = Paragraph::new(
+                    "\n\n\n\n       ⏳  PROCESSING TRANSACTION...\n\n       Contacting Google Companion API and updating active session credentials.\n       Please wait, the interface will automatically refresh."
+                )
+                .alignment(ratatui::layout::Alignment::Center)
+                .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Pending Action ").style(Style::default().fg(palette.border_active)));
+                f.render_widget(loading_msg, details_chunks[1]);
+            } else if let Some(q) = quota_cache {
+                let mut quota_items = Vec::new();
+                
+                if q.models.is_empty() {
+                    quota_items.push(ListItem::new("No model quota details cached. Press [r] to refresh quotas."));
+                } else {
+                    let gemini_5h_model = q.models.iter()
+                        .find(|m| m.name.contains("gemini") || m.display_name.as_ref().map(|n| n.contains("Gemini")).unwrap_or(false));
+                    let claude_5h_model = q.models.iter()
+                        .find(|m| m.name.contains("claude") || m.display_name.as_ref().map(|n| n.contains("Claude")).unwrap_or(false));
+
+                    let mut items_to_render = Vec::new();
+
+                    let get_weekly_bucket = |is_claude: bool| -> Option<(f64, String)> {
+                        let groups = q.quota_groups.as_ref()?;
+                        for group in groups {
+                            let gp_name = group.display_name.to_lowercase();
+                            let target_match = if is_claude {
+                                gp_name.contains("claude") || gp_name.contains("anthropic")
+                            } else {
+                                gp_name.contains("gemini") || gp_name.contains("google")
+                            };
+                            
+                            for bucket in &group.buckets {
+                                let b_id = bucket.bucket_id.to_lowercase();
+                                let b_disp = bucket.display_name.as_ref().map(|s| s.to_lowercase()).unwrap_or_default();
+                                let is_weekly = bucket.window == "weekly" || b_id.contains("weekly") || b_disp.contains("weekly");
+                                
+                                let name_match = target_match 
+                                    || (is_claude && (b_id.contains("claude") || b_disp.contains("claude")))
+                                    || (!is_claude && (b_id.contains("gemini") || b_disp.contains("gemini")));
+                                    
+                                if is_weekly && name_match {
+                                    return Some((bucket.remaining_fraction, bucket.reset_time.clone()));
+                                }
+                            }
+                        }
+                        None
+                    };
+
+                    if app.layout_preset.show_gemini() {
+                        if let Some(m) = gemini_5h_model {
+                            items_to_render.push((
+                                "Google Gemini (5h)".to_string(),
+                                m.percentage,
+                                m.reset_time.clone(),
+                                Some(m.name.clone()),
+                                false,
+                            ));
+                        }
+                        if let Some((fraction, reset_time)) = get_weekly_bucket(false) {
+                            items_to_render.push((
+                                "Google Gemini (Weekly)".to_string(),
+                                (fraction * 100.0).round() as i32,
+                                reset_time,
+                                None,
+                                true,
+                            ));
+                        }
+                    }
+
+                    if app.layout_preset.show_claude() {
+                        if let Some(m) = claude_5h_model {
+                            items_to_render.push((
+                                "Anthropic Claude (5h)".to_string(),
+                                m.percentage,
+                                m.reset_time.clone(),
+                                Some(m.name.clone()),
+                                false,
+                            ));
+                        }
+                        if let Some((fraction, reset_time)) = get_weekly_bucket(true) {
+                            items_to_render.push((
+                                "Anthropic Claude (Weekly)".to_string(),
+                                (fraction * 100.0).round() as i32,
+                                reset_time,
+                                None,
+                                true,
+                            ));
+                        }
+                    }
+
+                    for (display, pct, reset_time, model_name, is_weekly) in items_to_render {
+                        let bar_color = if pct >= 80 {
+                            palette.green_success
+                        } else if pct >= 30 {
+                            palette.yellow_warning
+                        } else {
+                            palette.red_danger
+                        };
+
+                        let bar_width = 15;
+                        let filled = ((pct as f64 / 100.0) * bar_width as f64).round() as usize;
+                        let empty = bar_width - filled;
+                        let bar_str = format!(
+                            "[{}{}] {:>3}%",
+                            "█".repeat(filled),
+                            "░".repeat(empty),
+                            pct
+                        );
+
+                        let mut cooldown_str = String::new();
+                        if let Some(name) = model_name {
+                            let history_key = format!("{}:{}:100", email, name);
+                            if let Some(&last_ts) = app.warmup_history.get(&history_key) {
+                                let elapsed = chrono::Utc::now().timestamp() - last_ts;
+                                if elapsed < COOLDOWN_SECONDS {
+                                    let rem = COOLDOWN_SECONDS - elapsed;
+                                    let h = rem / 3600;
+                                    let min = (rem % 3600) / 60;
+                                    let local_reset = chrono::Local::now() + chrono::Duration::seconds(rem);
+                                    cooldown_str = format!(" [Cooldown: {}h {}m (Resets at {})]", h, min, local_reset.format("%H:%M"));
+                                }
+                            }
+                        }
+
+                        let mut reset_str = String::new();
+                        let mut weekly_reset_str = String::new();
+
+                        if !reset_time.is_empty() {
+                            if let Some(cd) = format_countdown(&reset_time) {
+                                if is_weekly {
+                                    if let Ok(rt) = chrono::DateTime::parse_from_rfc3339(&reset_time) {
+                                        let local_reset = rt.with_timezone(&chrono::Local);
+                                        weekly_reset_str = format!(" [Weekly Reset: {} ({})]", cd, local_reset.format("%b %d %H:%M"));
+                                    } else {
+                                        weekly_reset_str = format!(" [Weekly Reset: {}]", cd);
+                                    }
+                                } else {
+                                    reset_str = format!(" [Reset in: {}]", cd);
+                                }
+                            }
+                        }
+
+                        quota_items.push(ListItem::new(Line::from(vec![
+                            Span::styled(format!("{:<28}", display), Style::default().fg(palette.fg)),
+                            Span::styled(bar_str, Style::default().fg(bar_color)),
+                            Span::styled(cooldown_str, Style::default().fg(palette.border_inactive)),
+                            Span::styled(reset_str, Style::default().fg(palette.blue_reset_5h)),
+                            Span::styled(weekly_reset_str, Style::default().fg(palette.violet_reset_weekly)),
+                        ])));
+                    }
+
+                    // Add separator divider line
+                    quota_items.push(ListItem::new(Line::from(vec![
+                        Span::styled("─── ", Style::default().fg(palette.border_inactive)),
+                        Span::styled("Detailed Model Breakdowns", Style::default().fg(palette.border_active).add_modifier(Modifier::BOLD)),
+                        Span::styled(" ──────────────────────────────────────────────────────────", Style::default().fg(palette.border_inactive)),
+                    ])));
+
+                    // Add detailed individual models list
+                    let mut sorted_models = q.models.clone();
+                    sorted_models.sort_by(|a, b| {
+                        let a_is_claude = a.name.contains("claude");
+                        let b_is_claude = b.name.contains("claude");
+                        match (a_is_claude, b_is_claude) {
+                            (true, false) => std::cmp::Ordering::Greater,
+                            (false, true) => std::cmp::Ordering::Less,
+                            _ => a.name.cmp(&b.name),
+                        }
+                    });
+
+                    for m in sorted_models {
+                        let is_gemini = m.name.contains("gemini");
+                        let is_claude = m.name.contains("claude");
+                        if (is_gemini && !app.layout_preset.show_gemini()) || (is_claude && !app.layout_preset.show_claude()) {
+                            continue;
+                        }
+                        
+                        let name = &m.name;
+                        let display = m.display_name.as_deref().unwrap_or(name);
+                        let pct = m.percentage;
+                        
+                        let bar_color = if pct >= 80 {
+                            palette.green_success
+                        } else if pct >= 30 {
+                            palette.yellow_warning
+                        } else {
+                            palette.red_danger
+                        };
+
+                        let bar_width = 15;
+                        let filled = ((pct as f64 / 100.0) * bar_width as f64).round() as usize;
+                        let empty = bar_width - filled;
+                        let bar_str = format!(
+                            "[{}{}] {:>3}%",
+                            "█".repeat(filled),
+                            "░".repeat(empty),
+                            pct
+                        );
+
+                        let history_key = format!("{}:{}:100", email, name);
+                        let mut cooldown_str = String::new();
+                        if let Some(&last_ts) = app.warmup_history.get(&history_key) {
+                            let elapsed = chrono::Utc::now().timestamp() - last_ts;
+                            if elapsed < COOLDOWN_SECONDS {
+                                let rem = COOLDOWN_SECONDS - elapsed;
+                                let h = rem / 3600;
+                                let min = (rem % 3600) / 60;
+                                let local_reset = chrono::Local::now() + chrono::Duration::seconds(rem);
+                                cooldown_str = format!(" [Cooldown: {}h {}m (Resets at {})]", h, min, local_reset.format("%H:%M"));
+                            }
+                        }
+
+                        let mut reset_str = String::new();
+                        if !m.reset_time.is_empty() {
+                            if let Some(cd) = format_countdown(&m.reset_time) {
+                                reset_str = format!(" [Reset in: {}]", cd);
+                            }
+                        }
+
+                        quota_items.push(ListItem::new(Line::from(vec![
+                            Span::styled(format!("{:<28}", display), Style::default().fg(palette.fg)),
+                            Span::styled(bar_str, Style::default().fg(bar_color)),
+                            Span::styled(cooldown_str, Style::default().fg(palette.border_inactive)),
+                            Span::styled(reset_str, Style::default().fg(palette.blue_reset_5h)),
+                        ])));
+                    }
+                }
+
+                let breakdown_border_color = palette.border_inactive;
+                let breakdown_title = " Quotas Breakdown ";
+
+                let total_quotas = quota_items.len();
+                let quota_list = List::new(quota_items)
+                    .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(breakdown_title).style(Style::default().fg(breakdown_border_color)))
+                    .highlight_style(Style::default().bg(palette.selection_bg).add_modifier(Modifier::BOLD));
+                f.render_stateful_widget(quota_list, details_chunks[1], &mut app.breakdown_state);
+
+                let current_quota_pos = app.breakdown_state.selected().unwrap_or(0);
+                let mut quota_scrollbar_state = ScrollbarState::new(total_quotas).position(current_quota_pos);
+                let quota_scrollbar = Scrollbar::default()
+                    .orientation(ScrollbarOrientation::VerticalRight)
+                    .begin_symbol(Some("▲"))
+                    .end_symbol(Some("▼"));
+                f.render_stateful_widget(quota_scrollbar, details_chunks[1], &mut quota_scrollbar_state);
+            } else {
+                let breakdown_border_color = palette.border_inactive;
+                let breakdown_title = " Quotas Breakdown ";
+                let empty_quota = Paragraph::new("\n No quota metrics cached in database. Press [r] to refresh active quotas.")
+                    .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(breakdown_title).style(Style::default().fg(breakdown_border_color)));
+                f.render_widget(empty_quota, details_chunks[1]);
+            }
+        } else {
+            let fallback = Paragraph::new("\n Please select or configure an account first.")
+                .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Profile Details ").style(Style::default().fg(palette.border_inactive)));
+            f.render_widget(fallback, content_chunks[1]);
+        }
+    }
+
 
 
     let loader_prefix = if app.is_loading {
@@ -511,7 +834,7 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
         .wrap(Wrap { trim: true });
     f.render_widget(status_block, chunks[2]);
 
-    let footer = Paragraph::new(" [Enter] Switch | [r] Refresh | [w] Warm Up | [/] Find | [s] Sort | [c] Compact | [p] Privacy | [v] Logs | [t] Theme | [h] Help")
+    let footer = Paragraph::new(" [Enter] Switch | [r] Refresh | [w] Warm Up | [/] Find | [s] Sort | [c] Compact | [p] Privacy | [v] Logs | [t] Theme | [o] Layout | [h] Help")
         .style(Style::default().fg(palette.border_inactive));
     f.render_widget(footer, chunks[3]);
 
@@ -531,6 +854,7 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
             Line::from(vec![Span::raw("  j / Down      Select next account in table")]),
             Line::from(vec![Span::raw("  k / Up        Select previous account in table")]),
             Line::from(vec![Span::raw("  s             Open keyboard-driven Sort Mode Selector menu")]),
+            Line::from(vec![Span::raw("  o             Open Layout Preset selector menu (real-time previews)")]),
             Line::from(vec![Span::raw("  /             Search / Filter accounts by typing email address")]),
             Line::from(vec![Span::raw("  c             Toggle Compact layout view (hides reset times for tablet/portrait)")]),
             Line::from(vec![Span::raw("  p             Toggle Privacy Mode (masks email addresses in screenshots)")]),
@@ -781,19 +1105,27 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
             .border_type(BorderType::Rounded)
             .style(Style::default().bg(palette.bg).fg(palette.border_active));
         
-        let area = centered_rect(60, 50, f.size());
+        let area = centered_rect(70, 60, f.size());
         f.render_widget(Clear, area);
         f.render_widget(block, area);
 
-        let list_chunks = Layout::default()
+        let inner_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(55),
+                Constraint::Percentage(45),
+            ])
+            .margin(2)
+            .split(area);
+
+        let left_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(3), // Search input
                 Constraint::Min(1),    // Themes list
                 Constraint::Length(1), // Footer tips
             ])
-            .margin(2)
-            .split(area);
+            .split(inner_chunks[0]);
 
         let search_block = Block::default()
             .title(" 🔍 Search Palette Name ")
@@ -801,7 +1133,7 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
             .border_type(BorderType::Rounded)
             .style(Style::default().fg(palette.yellow_warning));
         let search_para = Paragraph::new(format!("{}_", app.theme_search_query)).block(search_block);
-        f.render_widget(search_para, list_chunks[0]);
+        f.render_widget(search_para, left_chunks[0]);
 
         let visible_themes = app.get_visible_themes();
         let theme_items: Vec<ListItem> = visible_themes.iter().map(|t| {
@@ -815,7 +1147,7 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
         let list_widget = List::new(theme_items)
             .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Palette Presets ").style(Style::default().fg(palette.border_inactive)))
             .highlight_style(Style::default().bg(palette.selection_bg).add_modifier(Modifier::BOLD));
-        f.render_stateful_widget(list_widget, list_chunks[1], &mut app.theme_list_state);
+        f.render_stateful_widget(list_widget, left_chunks[1], &mut app.theme_list_state);
 
         let total_themes = visible_themes.len();
         let current_theme_pos = app.theme_list_state.selected().unwrap_or(0);
@@ -824,11 +1156,58 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
             .orientation(ScrollbarOrientation::VerticalRight)
             .begin_symbol(Some("▲"))
             .end_symbol(Some("▼"));
-        f.render_stateful_widget(theme_scrollbar, list_chunks[1], &mut theme_scrollbar_state);
+        f.render_stateful_widget(theme_scrollbar, left_chunks[1], &mut theme_scrollbar_state);
 
-        let tips = Paragraph::new(" [Esc/q/t] Cancel  |  [Enter] Select Theme  |  [j/k, Up/Down] Select preset")
+        let tips = Paragraph::new(" [Esc/q/t] Cancel  |  [Enter] Select Theme")
             .style(Style::default().fg(palette.border_inactive));
-        f.render_widget(tips, list_chunks[2]);
+        f.render_widget(tips, left_chunks[2]);
+
+        let highlighted_theme = visible_themes.get(current_theme_pos).copied().unwrap_or(app.theme);
+        let t_pal = highlighted_theme.get_palette();
+
+        let preview_text = vec![
+            Line::from(vec![
+                Span::styled("Theme: ", Style::default().fg(palette.border_inactive)),
+                Span::styled(highlighted_theme.to_str(), Style::default().fg(palette.fg).add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from(Span::raw("")),
+            Line::from(vec![
+                Span::styled("█ ", Style::default().fg(t_pal.bg)),
+                Span::raw("Background (bg)"),
+            ]),
+            Line::from(vec![
+                Span::styled("█ ", Style::default().fg(t_pal.fg)),
+                Span::raw("Foreground (fg)"),
+            ]),
+            Line::from(vec![
+                Span::styled("█ ", Style::default().fg(t_pal.green_success)),
+                Span::raw("Success (green_success)"),
+            ]),
+            Line::from(vec![
+                Span::styled("█ ", Style::default().fg(t_pal.yellow_warning)),
+                Span::raw("Warning (yellow_warning)"),
+            ]),
+            Line::from(vec![
+                Span::styled("█ ", Style::default().fg(t_pal.red_danger)),
+                Span::raw("Danger (red_danger)"),
+            ]),
+            Line::from(vec![
+                Span::styled("█ ", Style::default().fg(t_pal.selection_bg)),
+                Span::raw("Selection (selection_bg)"),
+            ]),
+            Line::from(vec![
+                Span::styled("█ ", Style::default().fg(t_pal.border_active)),
+                Span::raw("Active Border (border_active)"),
+            ]),
+            Line::from(vec![
+                Span::styled("█ ", Style::default().fg(t_pal.border_inactive)),
+                Span::raw("Inactive Border (border_inactive)"),
+            ]),
+        ];
+
+        let preview_para = Paragraph::new(preview_text)
+            .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Palette Details ").style(Style::default().fg(palette.border_active)));
+        f.render_widget(preview_para, inner_chunks[1]);
     }
 
     if app.show_sort_menu {
@@ -866,6 +1245,54 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
         f.render_stateful_widget(list_widget, list_chunks[0], &mut app.sort_menu_state);
 
         let tips = Paragraph::new(" [Esc/q/s] Cancel  |  [Enter] Select  |  [1-0] Select by Hotkey  |  [j/k] Scroll")
+            .style(Style::default().fg(palette.border_inactive));
+        f.render_widget(tips, list_chunks[1]);
+    }
+
+    if app.show_layout_menu {
+        let block = Block::default()
+            .title(" 📐 Select Layout Preset ")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .style(Style::default().bg(palette.bg).fg(palette.border_active));
+        
+        let area = centered_rect(65, 45, f.size());
+        f.render_widget(Clear, area);
+        f.render_widget(block, area);
+
+        let list_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(1),    // Options list
+                Constraint::Length(1), // Footer tips
+            ])
+            .margin(2)
+            .split(area);
+
+        let visible_layouts = vec![
+            LayoutPreset::BothFullList,
+            LayoutPreset::BothWithDetails,
+            LayoutPreset::GeminiFullList,
+            LayoutPreset::GeminiWithDetails,
+            LayoutPreset::ClaudeFullList,
+            LayoutPreset::ClaudeWithDetails,
+        ];
+
+        let layout_items: Vec<ListItem> = visible_layouts.iter().enumerate().map(|(idx, l)| {
+            let is_active = app.layout_preset == *l;
+            let active_indicator = if is_active { "● " } else { "  " };
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("[{}] ", idx + 1), Style::default().fg(palette.border_inactive)),
+                Span::styled(active_indicator, Style::default().fg(palette.green_success)),
+                Span::raw(l.to_str()),
+            ]))
+        }).collect();
+
+        let list_widget = List::new(layout_items)
+            .highlight_style(Style::default().bg(palette.selection_bg).add_modifier(Modifier::BOLD));
+        f.render_stateful_widget(list_widget, list_chunks[0], &mut app.layout_menu_state);
+
+        let tips = Paragraph::new(" [Esc/q/l] Cancel  |  [Enter] Save Layout  |  [1-6] Select by Hotkey  |  [j/k] Scroll")
             .style(Style::default().fg(palette.border_inactive));
         f.render_widget(tips, list_chunks[1]);
     }

@@ -40,6 +40,7 @@ pub fn load_cli_cache() -> CliCache {
         quotas: HashMap::new(),
         theme: None,
         health: HashMap::new(),
+        layout_preset: None,
     }
 }
 

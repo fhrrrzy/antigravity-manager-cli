@@ -315,6 +315,8 @@ pub struct CliCache {
     pub theme: Option<String>,
     #[serde(default)]
     pub health: HashMap<String, AccountHealth>,
+    #[serde(default)]
+    pub layout_preset: Option<String>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -399,4 +401,50 @@ impl SortMode {
 pub enum Focus {
     Accounts,
     Breakdown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayoutPreset {
+    BothFullList,
+    BothWithDetails,
+    GeminiFullList,
+    GeminiWithDetails,
+    ClaudeFullList,
+    ClaudeWithDetails,
+}
+
+impl LayoutPreset {
+    pub fn to_str(&self) -> &'static str {
+        match self {
+            LayoutPreset::BothFullList => "Both Providers (Full List - 100% Width)",
+            LayoutPreset::BothWithDetails => "Both Providers (With Details Pane - 60/40 Split)",
+            LayoutPreset::GeminiFullList => "Gemini Only (Full List - 100% Width)",
+            LayoutPreset::GeminiWithDetails => "Gemini Only (With Details Pane - 60/40 Split)",
+            LayoutPreset::ClaudeFullList => "Claude Only (Full List - 100% Width)",
+            LayoutPreset::ClaudeWithDetails => "Claude Only (With Details Pane - 60/40 Split)",
+        }
+    }
+
+    pub fn is_full_list(&self) -> bool {
+        match self {
+            LayoutPreset::BothFullList | LayoutPreset::GeminiFullList | LayoutPreset::ClaudeFullList => true,
+            _ => false,
+        }
+    }
+
+    pub fn show_gemini(&self) -> bool {
+        match self {
+            LayoutPreset::BothFullList | LayoutPreset::BothWithDetails |
+            LayoutPreset::GeminiFullList | LayoutPreset::GeminiWithDetails => true,
+            _ => false,
+        }
+    }
+
+    pub fn show_claude(&self) -> bool {
+        match self {
+            LayoutPreset::BothFullList | LayoutPreset::BothWithDetails |
+            LayoutPreset::ClaudeFullList | LayoutPreset::ClaudeWithDetails => true,
+            _ => false,
+        }
+    }
 }

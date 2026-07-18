@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 
 use crate::types::{
     Account, CliCache, InputMode, SortMode, Focus, ThemeType, AppEvent, NetworkResult,
-    QuotaData, COOLDOWN_SECONDS, TokenCache
+    QuotaData, COOLDOWN_SECONDS, TokenCache, LayoutPreset
 };
 use crate::config::{get_data_dir, save_cli_cache, load_warmup_history, add_account_to_db, save_warmup_history, record_health_failure};
 use crate::google_api::{
@@ -55,6 +55,11 @@ pub struct App {
     pub privacy_mode: bool,
     pub fx_manager: tachyonfx::EffectManager<()>,
     pub last_tick_time: Instant,
+    pub layout_preset: LayoutPreset,
+    pub original_layout_preset: Option<LayoutPreset>,
+    pub original_theme: Option<ThemeType>,
+    pub show_layout_menu: bool,
+    pub layout_menu_state: ListState,
 }
 
 impl App {
@@ -87,6 +92,16 @@ impl App {
 
         let mut log_state = ListState::default();
         log_state.select(Some(0));
+
+        let layout_preset = cli_cache.layout_preset.as_deref().and_then(|s| match s {
+            "BothFullList" => Some(LayoutPreset::BothFullList),
+            "BothWithDetails" => Some(LayoutPreset::BothWithDetails),
+            "GeminiFullList" => Some(LayoutPreset::GeminiFullList),
+            "GeminiWithDetails" => Some(LayoutPreset::GeminiWithDetails),
+            "ClaudeFullList" => Some(LayoutPreset::ClaudeFullList),
+            "ClaudeWithDetails" => Some(LayoutPreset::ClaudeWithDetails),
+            _ => None,
+        }).unwrap_or(LayoutPreset::BothFullList);
 
         let mut app = App {
             accounts,
@@ -128,6 +143,15 @@ impl App {
             privacy_mode: false,
             fx_manager: tachyonfx::EffectManager::default(),
             last_tick_time: Instant::now(),
+            layout_preset,
+            original_layout_preset: None,
+            original_theme: None,
+            show_layout_menu: false,
+            layout_menu_state: {
+                let mut s = ListState::default();
+                s.select(Some(0));
+                s
+            },
         };
         app.sort_accounts();
         app
