@@ -325,9 +325,11 @@ impl App {
     pub fn get_column_index(&self, col_x: u16, area: Rect) -> Option<usize> {
         let widths = [
             (area.width as f32 * 0.08) as u16,
-            (area.width as f32 * 0.44) as u16,
-            (area.width as f32 * 0.24) as u16,
-            (area.width as f32 * 0.24) as u16,
+            (area.width as f32 * 0.32) as u16,
+            (area.width as f32 * 0.15) as u16,
+            (area.width as f32 * 0.15) as u16,
+            (area.width as f32 * 0.15) as u16,
+            (area.width as f32 * 0.15) as u16,
         ];
         
         let mut cur_x = area.x;

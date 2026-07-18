@@ -58,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut refresh = false;
                 let mut is_json = false;
                 for arg in args.iter().skip(2) {
-                    if arg == "--refresh" {
+                    if arg == "--refresh" || arg == "-r" {
                         refresh = true;
                     } else if arg == "--json" {
                         is_json = true;
@@ -941,51 +941,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     }
                                                 }
                                                 2 => {
-                                                    match app.sort_mode {
-                                                        SortMode::Gemini5h => {
-                                                            if app.sort_desc {
-                                                                app.sort_mode = SortMode::GeminiWeekly;
-                                                                app.sort_desc = false;
-                                                            } else {
-                                                                app.sort_desc = true;
-                                                            }
-                                                        }
-                                                        SortMode::GeminiWeekly => {
-                                                            if app.sort_desc {
-                                                                app.sort_mode = SortMode::Gemini5h;
-                                                                app.sort_desc = false;
-                                                            } else {
-                                                                app.sort_desc = true;
-                                                            }
-                                                        }
-                                                        _ => {
-                                                            app.sort_mode = SortMode::Gemini5h;
-                                                            app.sort_desc = false;
-                                                        }
+                                                    if app.sort_mode == SortMode::Gemini5h {
+                                                        app.sort_desc = !app.sort_desc;
+                                                    } else {
+                                                        app.sort_mode = SortMode::Gemini5h;
+                                                        app.sort_desc = false;
                                                     }
                                                 }
                                                 3 => {
-                                                    match app.sort_mode {
-                                                        SortMode::Claude5h => {
-                                                            if app.sort_desc {
-                                                                app.sort_mode = SortMode::ClaudeWeekly;
-                                                                app.sort_desc = false;
-                                                            } else {
-                                                                app.sort_desc = true;
-                                                            }
-                                                        }
-                                                        SortMode::ClaudeWeekly => {
-                                                            if app.sort_desc {
-                                                                app.sort_mode = SortMode::Claude5h;
-                                                                app.sort_desc = false;
-                                                            } else {
-                                                                app.sort_desc = true;
-                                                            }
-                                                        }
-                                                        _ => {
-                                                            app.sort_mode = SortMode::Claude5h;
-                                                            app.sort_desc = false;
-                                                        }
+                                                    if app.sort_mode == SortMode::GeminiWeekly {
+                                                        app.sort_desc = !app.sort_desc;
+                                                    } else {
+                                                        app.sort_mode = SortMode::GeminiWeekly;
+                                                        app.sort_desc = false;
+                                                    }
+                                                }
+                                                4 => {
+                                                    if app.sort_mode == SortMode::Claude5h {
+                                                        app.sort_desc = !app.sort_desc;
+                                                    } else {
+                                                        app.sort_mode = SortMode::Claude5h;
+                                                        app.sort_desc = false;
+                                                    }
+                                                }
+                                                5 => {
+                                                    if app.sort_mode == SortMode::ClaudeWeekly {
+                                                        app.sort_desc = !app.sort_desc;
+                                                    } else {
+                                                        app.sort_mode = SortMode::ClaudeWeekly;
+                                                        app.sort_desc = false;
                                                     }
                                                 }
                                                 _ => {}
@@ -996,7 +980,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                     }
                                 } else if mouse.row >= table_area.y + 3 {
-                                    let clicked_idx = ((mouse.row - (table_area.y + 3)) / 2) as usize;
+                                    let clicked_idx = (mouse.row - (table_area.y + 3)) as usize;
                                     let clicked_account = {
                                         let visible = app.get_visible_accounts();
                                         if clicked_idx < visible.len() {

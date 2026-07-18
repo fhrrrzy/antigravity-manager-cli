@@ -90,34 +90,56 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
         ])
         .split(chunks[1]);
 
-    let col1_text = if app.sort_mode == SortMode::Email {
-        format!("Email / Quota Pool {}", if app.sort_desc { "▼" } else { "▲" })
+    let col_email_text = if app.sort_mode == SortMode::Email {
+        format!("Email {}", if app.sort_desc { "▼" } else { "▲" })
     } else {
-        "Email / Quota Pool".to_string()
+        "Email".to_string()
     };
-    let col1_style = if app.sort_mode == SortMode::Email {
+    let col_email_style = if app.sort_mode == SortMode::Email {
         Style::default().fg(palette.blue_reset_5h).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(palette.border_active).add_modifier(Modifier::BOLD)
     };
 
-    let col2_text = match app.sort_mode {
-        SortMode::Gemini5h => format!("Gemini [5h {}]", if app.sort_desc { "▼" } else { "▲" }),
-        SortMode::GeminiWeekly => format!("Gemini [Wk {}]", if app.sort_desc { "▼" } else { "▲" }),
-        _ => "Gemini (5h / Wk)".to_string(),
+    let col_gemini5h_text = if app.sort_mode == SortMode::Gemini5h {
+        format!("Gemini 5h {}", if app.sort_desc { "▼" } else { "▲" })
+    } else {
+        "Gemini 5h".to_string()
     };
-    let col2_style = if app.sort_mode == SortMode::Gemini5h || app.sort_mode == SortMode::GeminiWeekly {
+    let col_gemini5h_style = if app.sort_mode == SortMode::Gemini5h {
         Style::default().fg(palette.blue_reset_5h).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(palette.border_active).add_modifier(Modifier::BOLD)
     };
 
-    let col3_text = match app.sort_mode {
-        SortMode::Claude5h => format!("Claude [5h {}]", if app.sort_desc { "▼" } else { "▲" }),
-        SortMode::ClaudeWeekly => format!("Claude [Wk {}]", if app.sort_desc { "▼" } else { "▲" }),
-        _ => "Claude (5h / Wk)".to_string(),
+    let col_geminiwk_text = if app.sort_mode == SortMode::GeminiWeekly {
+        format!("Gemini Wk {}", if app.sort_desc { "▼" } else { "▲" })
+    } else {
+        "Gemini Wk".to_string()
     };
-    let col3_style = if app.sort_mode == SortMode::Claude5h || app.sort_mode == SortMode::ClaudeWeekly {
+    let col_geminiwk_style = if app.sort_mode == SortMode::GeminiWeekly {
+        Style::default().fg(palette.blue_reset_5h).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(palette.border_active).add_modifier(Modifier::BOLD)
+    };
+
+    let col_claude5h_text = if app.sort_mode == SortMode::Claude5h {
+        format!("Claude 5h {}", if app.sort_desc { "▼" } else { "▲" })
+    } else {
+        "Claude 5h".to_string()
+    };
+    let col_claude5h_style = if app.sort_mode == SortMode::Claude5h {
+        Style::default().fg(palette.blue_reset_5h).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(palette.border_active).add_modifier(Modifier::BOLD)
+    };
+
+    let col_claudewk_text = if app.sort_mode == SortMode::ClaudeWeekly {
+        format!("Claude Wk {}", if app.sort_desc { "▼" } else { "▲" })
+    } else {
+        "Claude Wk".to_string()
+    };
+    let col_claudewk_style = if app.sort_mode == SortMode::ClaudeWeekly {
         Style::default().fg(palette.blue_reset_5h).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(palette.border_active).add_modifier(Modifier::BOLD)
@@ -125,9 +147,11 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
 
     let header_cells = vec![
         Cell::from("Active").style(Style::default().fg(palette.border_inactive).add_modifier(Modifier::BOLD)),
-        Cell::from(col1_text).style(col1_style),
-        Cell::from(col2_text).style(col2_style),
-        Cell::from(col3_text).style(col3_style),
+        Cell::from(col_email_text).style(col_email_style),
+        Cell::from(col_gemini5h_text).style(col_gemini5h_style),
+        Cell::from(col_geminiwk_text).style(col_geminiwk_style),
+        Cell::from(col_claude5h_text).style(col_claude5h_style),
+        Cell::from(col_claudewk_text).style(col_claudewk_style),
     ];
     let header = Row::new(header_cells)
         .style(Style::default().bg(palette.selection_bg))
@@ -216,25 +240,20 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
             Cell::from(active_mark).style(if is_active { Style::default().fg(palette.green_success) } else { Style::default() }),
             Cell::from(acc.email.clone()).style(if is_active { Style::default().add_modifier(Modifier::BOLD) } else { Style::default() }),
             Cell::from(gemini_5h_bar).style(Style::default().fg(gemini_5h_color)),
-            Cell::from(claude_5h_bar).style(Style::default().fg(claude_5h_color)),
-        ];
-        rows.push(Row::new(top_cells).style(top_row_style));
-
-        let bottom_row_style = Style::default().bg(row_bg).fg(palette.border_inactive);
-        let bottom_cells = vec![
-            Cell::from(""),
-            Cell::from("  └─ weekly").style(Style::default().fg(palette.border_inactive)),
             Cell::from(gemini_wk_bar).style(Style::default().fg(gemini_wk_color)),
+            Cell::from(claude_5h_bar).style(Style::default().fg(claude_5h_color)),
             Cell::from(claude_wk_bar).style(Style::default().fg(claude_wk_color)),
         ];
-        rows.push(Row::new(bottom_cells).style(bottom_row_style));
+        rows.push(Row::new(top_cells).style(top_row_style));
     }
 
     let widths: &[Constraint] = &[
-        Constraint::Length(8),
-        Constraint::Percentage(44),
-        Constraint::Percentage(24),
-        Constraint::Percentage(24),
+        Constraint::Percentage(8),
+        Constraint::Percentage(32),
+        Constraint::Percentage(15),
+        Constraint::Percentage(15),
+        Constraint::Percentage(15),
+        Constraint::Percentage(15),
     ];
 
     let table_border_color = if app.focused_panel == Focus::Accounts { palette.border_active } else { palette.border_inactive };
@@ -255,12 +274,12 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
 
     let mut render_state = TableState::default();
     if let Some(selected_idx) = app.list_state.selected() {
-        render_state.select(Some(2 * selected_idx));
+        render_state.select(Some(selected_idx));
     }
     f.render_stateful_widget(account_table, content_chunks[0], &mut render_state);
 
-    let total_rows = app.get_visible_accounts().len() * 2;
-    let current_pos = app.list_state.selected().unwrap_or(0) * 2;
+    let total_rows = app.get_visible_accounts().len();
+    let current_pos = app.list_state.selected().unwrap_or(0);
     let mut scrollbar_state = ScrollbarState::new(total_rows).position(current_pos);
     let scrollbar = Scrollbar::default()
         .orientation(ScrollbarOrientation::VerticalRight)
