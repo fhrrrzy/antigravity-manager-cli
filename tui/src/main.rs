@@ -4,7 +4,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use crossterm::{
-    event::{self, Event as CEvent, KeyCode, KeyEvent},
+    event::{self, Event as CEvent, KeyCode, KeyEvent, MouseEvent, MouseEventKind, MouseButton, EnableMouseCapture, DisableMouseCapture},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -330,6 +330,7 @@ enum AddAccountAction {
 
 enum AppEvent {
     Key(KeyEvent),
+    Mouse(MouseEvent),
     Tick,
     Progress(String),
     NetworkSuccess(NetworkResult),
@@ -495,6 +496,48 @@ impl App {
             let query = self.theme_search_query.to_lowercase();
             all_themes.into_iter().filter(|t| t.to_str().to_lowercase().contains(&query)).collect()
         }
+    }
+
+    fn get_column_index(&self, click_x: u16, table_area: Rect) -> Option<usize> {
+        if click_x <= table_area.x || click_x >= table_area.x + table_area.width - 1 {
+            return None;
+        }
+        let inner_width = table_area.width - 2;
+        let local_x = click_x - (table_area.x + 1);
+
+        let col_widths = if self.compact_mode {
+            let active_w = 8;
+            let gemini_w = (inner_width as f32 * 0.25) as u16;
+            let claude_w = (inner_width as f32 * 0.25) as u16;
+            let email_w = if inner_width > (active_w + gemini_w + claude_w) {
+                inner_width - active_w - gemini_w - claude_w
+            } else {
+                30
+            };
+            vec![active_w, email_w, gemini_w, claude_w]
+        } else {
+            let active_w = 8;
+            let gemini_w = (inner_width as f32 * 0.18) as u16;
+            let claude_w = (inner_width as f32 * 0.18) as u16;
+            let five_h_w = (inner_width as f32 * 0.13) as u16;
+            let weekly_w = (inner_width as f32 * 0.13) as u16;
+            let sum_fixed = active_w + gemini_w + claude_w + five_h_w + weekly_w;
+            let email_w = if inner_width > sum_fixed {
+                inner_width - sum_fixed
+            } else {
+                30
+            };
+            vec![active_w, email_w, gemini_w, claude_w, five_h_w, weekly_w]
+        };
+
+        let mut current_offset = 0;
+        for (idx, &w) in col_widths.iter().enumerate() {
+            if local_x >= current_offset && local_x < current_offset + w {
+                return Some(idx);
+            }
+            current_offset += w;
+        }
+        None
     }
 
     fn select_next(&mut self) {
@@ -2593,7 +2636,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     
@@ -2603,8 +2646,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         loop {
             if event::poll(Duration::from_millis(200)).unwrap() {
-                if let CEvent::Key(key) = event::read().unwrap() {
-                    let _ = tx.send(AppEvent::Key(key));
+                match event::read().unwrap() {
+                    CEvent::Key(key) => {
+                        let _ = tx.send(AppEvent::Key(key));
+                    }
+                    CEvent::Mouse(mouse) => {
+                        let _ = tx.send(AppEvent::Mouse(mouse));
+                    }
+                    _ => {}
                 }
             }
             let _ = tx.send(AppEvent::Tick);
@@ -3543,7 +3592,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             disable_raw_mode()?;
                             execute!(
                                 terminal.backend_mut(),
-                                LeaveAlternateScreen
+                                LeaveAlternateScreen,
+                                DisableMouseCapture
                             )?;
                             terminal.show_cursor()?;
                             return Ok(());
@@ -3738,6 +3788,105 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                         _ => {}
+                    }
+                }
+                AppEvent::Mouse(mouse) => {
+                    if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                        let size = terminal.size().unwrap_or_default();
+                        let modal_active = app.show_theme_selector 
+                            || app.show_help 
+                            || app.show_logs 
+                            || !matches!(app.input_mode, InputMode::Normal);
+                        
+                        if !modal_active {
+                            let chunks = Layout::default()
+                                .direction(Direction::Vertical)
+                                .constraints([
+                                    Constraint::Length(3),
+                                    Constraint::Min(10),
+                                    Constraint::Length(3),
+                                    Constraint::Length(1),
+                                ])
+                                .split(size);
+
+                            let content_chunks = Layout::default()
+                                .direction(Direction::Horizontal)
+                                .constraints([
+                                    Constraint::Percentage(60),
+                                    Constraint::Percentage(40),
+                                ])
+                                .split(chunks[1]);
+
+                            let table_area = content_chunks[0];
+                            
+                            if mouse.column >= table_area.x && mouse.column < table_area.x + table_area.width {
+                                if mouse.row == table_area.y + 1 {
+                                    if let Some(col_idx) = app.get_column_index(mouse.column, table_area) {
+                                        let new_mode = if app.compact_mode {
+                                            match col_idx {
+                                                0 | 1 => Some(SortMode::Email),
+                                                2 => Some(SortMode::GeminiQuota),
+                                                3 => Some(SortMode::ClaudeQuota),
+                                                _ => None,
+                                            }
+                                        } else {
+                                            match col_idx {
+                                                0 | 1 => Some(SortMode::Email),
+                                                2 => Some(SortMode::GeminiQuota),
+                                                3 => Some(SortMode::ClaudeQuota),
+                                                4 => Some(SortMode::Reset5h),
+                                                5 => Some(SortMode::ResetWeekly),
+                                                _ => None,
+                                            }
+                                        };
+                                        
+                                        if let Some(mode) = new_mode {
+                                            if !app.is_loading {
+                                                app.sort_mode = mode;
+                                                app.sort_accounts();
+                                                app.set_status(&format!("Sorted accounts by: {}", app.sort_mode.to_str()));
+                                            }
+                                        }
+                                    }
+                                } else if mouse.row >= table_area.y + 3 {
+                                    let clicked_idx = (mouse.row - (table_area.y + 3)) as usize;
+                                    let clicked_account = {
+                                        let visible = app.get_visible_accounts();
+                                        if clicked_idx < visible.len() {
+                                            Some((*visible[clicked_idx]).clone())
+                                        } else {
+                                            None
+                                        }
+                                    };
+                                    
+                                    if let Some(acc) = clicked_account {
+                                        if !app.is_loading {
+                                            app.list_state.select(Some(clicked_idx));
+                                            app.focused_panel = Focus::Accounts;
+                                            
+                                            let is_currently_active = app.active_email.as_ref() == Some(&acc.email);
+                                            if is_currently_active {
+                                                app.set_status(&format!("Session is already active for {}.", acc.email));
+                                            } else {
+                                                app.is_loading = true;
+                                                app.set_status(&format!("Activating and writing keyring credentials for {}...", acc.email));
+                                                spawn_network_task(
+                                                    event_tx.clone(),
+                                                    Some(acc),
+                                                    Vec::new(),
+                                                    app.cli_cache.clone(),
+                                                    app.warmup_history.clone(),
+                                                    "switch",
+                                                    None,
+                                                    false,
+                                                    None,
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 AppEvent::Progress(msg) => {
