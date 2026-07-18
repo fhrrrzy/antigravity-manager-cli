@@ -1134,7 +1134,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                     }
                                 } else if mouse.row >= table_area.y + 3 {
-                                    let clicked_idx = ((mouse.row - (table_area.y + 3)) / 3) as usize;
+                                    let clicked_idx = app.list_state.offset() + ((mouse.row - (table_area.y + 3)) / 3) as usize;
                                     let clicked_account = {
                                         let visible = app.get_visible_accounts();
                                         if clicked_idx < visible.len() {
@@ -1146,32 +1146,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     
                                     if let Some(acc) = clicked_account {
                                         if !app.is_loading {
-                                            let current_selected = app.list_state.selected();
-                                            if current_selected == Some(clicked_idx) {
-                                                // Already selected: Activate / Switch session (acts as double-tap/double-click)
-                                                let is_currently_active = app.active_email.as_ref() == Some(&acc.email);
-                                                if is_currently_active {
-                                                    app.set_status(&format!("Session is already active for {}.", acc.email));
-                                                } else {
-                                                    app.is_loading = true;
-                                                    app.set_status(&format!("Activating and writing keyring credentials for {}...", acc.email));
-                                                    spawn_network_task(
-                                                        event_tx.clone(),
-                                                        Some(acc),
-                                                        Vec::new(),
-                                                        app.cli_cache.clone(),
-                                                        app.warmup_history.clone(),
-                                                        "switch",
-                                                        None,
-                                                        false,
-                                                        None,
-                                                    );
-                                                }
+                                            // Select and focus the clicked account
+                                            app.list_state.select(Some(clicked_idx));
+                                            app.focused_panel = Focus::Accounts;
+                                            
+                                            // Instantly switch and activate the session
+                                            let is_currently_active = app.active_email.as_ref() == Some(&acc.email);
+                                            if is_currently_active {
+                                                app.set_status(&format!("Session is already active for {}.", acc.email));
                                             } else {
-                                                // Not selected yet: Just select it (highlight and update right profile detail panel)
-                                                app.list_state.select(Some(clicked_idx));
-                                                app.focused_panel = Focus::Accounts;
-                                                app.set_status(&format!("Selected account: {}. Tap again to activate.", acc.email));
+                                                app.is_loading = true;
+                                                app.set_status(&format!("Activating and writing keyring credentials for {}...", acc.email));
+                                                spawn_network_task(
+                                                    event_tx.clone(),
+                                                    Some(acc),
+                                                    Vec::new(),
+                                                    app.cli_cache.clone(),
+                                                    app.warmup_history.clone(),
+                                                    "switch",
+                                                    None,
+                                                    false,
+                                                    None,
+                                                );
                                             }
                                         }
                                     }

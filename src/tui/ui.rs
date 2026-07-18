@@ -5,7 +5,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{
         Block, Borders, BorderType, Paragraph, Clear, Wrap,
-        Table, TableState, Row, Cell, Scrollbar, ScrollbarOrientation, ScrollbarState,
+        Table, Row, Cell, Scrollbar, ScrollbarOrientation, ScrollbarState,
         List, ListItem
     }
 };
@@ -381,11 +381,7 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
         .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(table_title).style(Style::default().fg(table_border_color)))
         .highlight_style(Style::default());
 
-    let mut render_state = TableState::default();
-    if let Some(selected_idx) = app.list_state.selected() {
-        render_state.select(Some(selected_idx));
-    }
-    f.render_stateful_widget(account_table, content_chunks[0], &mut render_state);
+    f.render_stateful_widget(account_table, content_chunks[0], &mut app.list_state);
 
     let total_rows = app.get_visible_accounts().len();
     let current_pos = app.list_state.selected().unwrap_or(0);
