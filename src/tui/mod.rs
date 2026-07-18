@@ -325,21 +325,29 @@ impl App {
     }
 
     pub fn get_column_index(&self, col_x: u16, area: Rect) -> Option<usize> {
-        let widths = [
-            (area.width as f32 * 0.08) as u16,
-            (area.width as f32 * 0.32) as u16,
-            (area.width as f32 * 0.15) as u16,
-            (area.width as f32 * 0.15) as u16,
-            (area.width as f32 * 0.15) as u16,
-            (area.width as f32 * 0.15) as u16,
-        ];
+        if col_x <= area.x || col_x >= area.x + area.width - 1 {
+            return None;
+        }
+
+        let inner_width = if area.width > 2 { area.width - 2 } else { return None; };
         
-        let mut cur_x = area.x;
-        for (idx, w) in widths.iter().enumerate() {
+        let fixed_cols_w = 68; // 8 (col0) + 15 * 4 (cols 2-5)
+        let gaps_w = 5;        // 5 spacers of 1 char each
+        
+        let col1_w = if inner_width > fixed_cols_w + gaps_w {
+            inner_width - (fixed_cols_w + gaps_w)
+        } else {
+            30
+        };
+        
+        let widths = [8, col1_w, 15, 15, 15, 15];
+        
+        let mut cur_x = area.x + 1;
+        for (idx, &w) in widths.iter().enumerate() {
             if col_x >= cur_x && col_x < cur_x + w {
                 return Some(idx);
             }
-            cur_x += w;
+            cur_x += w + 1; // width of column + 1 spacer gap
         }
         None
     }
