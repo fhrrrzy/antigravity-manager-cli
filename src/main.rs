@@ -343,6 +343,108 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         continue;
                     }
+                    if app.show_sort_menu {
+                        match key.code {
+                            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('s') | KeyCode::Char('S') => {
+                                app.show_sort_menu = false;
+                                app.set_status("Sort menu closed.");
+                            }
+                            KeyCode::Enter => {
+                                let selected_idx = app.sort_menu_state.selected().unwrap_or(0);
+                                if selected_idx < crate::tui::ui::SORT_OPTIONS.len() {
+                                    let (_, mode, desc) = crate::tui::ui::SORT_OPTIONS[selected_idx];
+                                    app.sort_mode = mode;
+                                    app.sort_desc = desc;
+                                    app.sort_accounts();
+                                    let dir_str = if desc { "descending" } else { "ascending" };
+                                    app.set_status(&format!("Sorted accounts by: {} ({})", mode.to_str(), dir_str));
+                                }
+                                app.show_sort_menu = false;
+                            }
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                let selected = app.sort_menu_state.selected().unwrap_or(0);
+                                let next = if selected >= crate::tui::ui::SORT_OPTIONS.len() - 1 { 0 } else { selected + 1 };
+                                app.sort_menu_state.select(Some(next));
+                            }
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                let selected = app.sort_menu_state.selected().unwrap_or(0);
+                                let prev = if selected == 0 { crate::tui::ui::SORT_OPTIONS.len() - 1 } else { selected - 1 };
+                                app.sort_menu_state.select(Some(prev));
+                            }
+                            KeyCode::Char('1') => {
+                                app.sort_mode = SortMode::Email;
+                                app.sort_desc = false;
+                                app.sort_accounts();
+                                app.show_sort_menu = false;
+                                app.set_status("Sorted accounts by: Email (ascending)");
+                            }
+                            KeyCode::Char('2') => {
+                                app.sort_mode = SortMode::Email;
+                                app.sort_desc = true;
+                                app.sort_accounts();
+                                app.show_sort_menu = false;
+                                app.set_status("Sorted accounts by: Email (descending)");
+                            }
+                            KeyCode::Char('3') => {
+                                app.sort_mode = SortMode::Gemini5h;
+                                app.sort_desc = false;
+                                app.sort_accounts();
+                                app.show_sort_menu = false;
+                                app.set_status("Sorted accounts by: Gemini 5h (ascending)");
+                            }
+                            KeyCode::Char('4') => {
+                                app.sort_mode = SortMode::Gemini5h;
+                                app.sort_desc = true;
+                                app.sort_accounts();
+                                app.show_sort_menu = false;
+                                app.set_status("Sorted accounts by: Gemini 5h (descending)");
+                            }
+                            KeyCode::Char('5') => {
+                                app.sort_mode = SortMode::GeminiWeekly;
+                                app.sort_desc = false;
+                                app.sort_accounts();
+                                app.show_sort_menu = false;
+                                app.set_status("Sorted accounts by: Gemini Weekly (ascending)");
+                            }
+                            KeyCode::Char('6') => {
+                                app.sort_mode = SortMode::GeminiWeekly;
+                                app.sort_desc = true;
+                                app.sort_accounts();
+                                app.show_sort_menu = false;
+                                app.set_status("Sorted accounts by: Gemini Weekly (descending)");
+                            }
+                            KeyCode::Char('7') => {
+                                app.sort_mode = SortMode::Claude5h;
+                                app.sort_desc = false;
+                                app.sort_accounts();
+                                app.show_sort_menu = false;
+                                app.set_status("Sorted accounts by: Claude 5h (ascending)");
+                            }
+                            KeyCode::Char('8') => {
+                                app.sort_mode = SortMode::Claude5h;
+                                app.sort_desc = true;
+                                app.sort_accounts();
+                                app.show_sort_menu = false;
+                                app.set_status("Sorted accounts by: Claude 5h (descending)");
+                            }
+                            KeyCode::Char('9') => {
+                                app.sort_mode = SortMode::ClaudeWeekly;
+                                app.sort_desc = false;
+                                app.sort_accounts();
+                                app.show_sort_menu = false;
+                                app.set_status("Sorted accounts by: Claude Weekly (ascending)");
+                            }
+                            KeyCode::Char('0') => {
+                                app.sort_mode = SortMode::ClaudeWeekly;
+                                app.sort_desc = true;
+                                app.sort_accounts();
+                                app.show_sort_menu = false;
+                                app.set_status("Sorted accounts by: Claude Weekly (descending)");
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
 
                     if app.show_theme_selector {
                         match key.code {
@@ -579,6 +681,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 app.set_status("Viewing complete session logs history.");
                             }
                         }
+                        KeyCode::Char('s') | KeyCode::Char('S') => {
+                            if !app.is_loading {
+                                app.show_sort_menu = true;
+                                app.sort_menu_state.select(Some(0));
+                                app.set_status("Open Sort Mode Selector. Use j/k to navigate or 1-0 hotkeys.");
+                            }
+                        }
                         KeyCode::Char('t') | KeyCode::Char('T') => {
                             if !app.is_loading {
                                 app.show_theme_selector = true;
@@ -777,19 +886,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         email: acc.email.clone(),
                                     };
                                 }
-                            }
-                        }
-                        KeyCode::Char('s') | KeyCode::Char('S') => {
-                            if !app.is_loading {
-                                app.sort_mode = match app.sort_mode {
-                                    SortMode::Email => SortMode::Gemini5h,
-                                    SortMode::Gemini5h => SortMode::GeminiWeekly,
-                                    SortMode::GeminiWeekly => SortMode::Claude5h,
-                                    SortMode::Claude5h => SortMode::ClaudeWeekly,
-                                    SortMode::ClaudeWeekly => SortMode::Email,
-                                };
-                                app.sort_accounts();
-                                app.set_status(&format!("Sorted accounts by: {}", app.sort_mode.to_str()));
                             }
                         }
                         KeyCode::Char('/') => {

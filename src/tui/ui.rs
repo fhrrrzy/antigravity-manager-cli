@@ -13,6 +13,19 @@ use ratatui::{
 use crate::types::{Focus, InputMode, QuotaData, COOLDOWN_SECONDS, SortMode};
 use crate::tui::App;
 
+pub const SORT_OPTIONS: &[(&str, SortMode, bool)] = &[
+    ("Email (Ascending)", SortMode::Email, false),
+    ("Email (Descending)", SortMode::Email, true),
+    ("Gemini 5h (Ascending)", SortMode::Gemini5h, false),
+    ("Gemini 5h (Descending)", SortMode::Gemini5h, true),
+    ("Gemini Weekly (Ascending)", SortMode::GeminiWeekly, false),
+    ("Gemini Weekly (Descending)", SortMode::GeminiWeekly, true),
+    ("Claude 5h (Ascending)", SortMode::Claude5h, false),
+    ("Claude 5h (Descending)", SortMode::Claude5h, true),
+    ("Claude Weekly (Ascending)", SortMode::ClaudeWeekly, false),
+    ("Claude Weekly (Descending)", SortMode::ClaudeWeekly, true),
+];
+
 fn format_countdown(reset_time: &str) -> Option<String> {
     let now = chrono::Utc::now();
     if let Ok(rt) = chrono::DateTime::parse_from_rfc3339(reset_time) {
@@ -425,7 +438,7 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
             Line::from(vec![Span::raw("  Tab           Switch panel focus (Accounts Table <-> Quotas Breakdown)")]),
             Line::from(vec![Span::raw("  j / Down      Select next item in active panel")]),
             Line::from(vec![Span::raw("  k / Up        Select previous item in active panel")]),
-            Line::from(vec![Span::raw("  s             Cycle table sorting (Email -> Gemini 5h -> Gemini Wk -> Claude 5h -> Claude Wk")]),
+            Line::from(vec![Span::raw("  s             Open keyboard-driven Sort Mode Selector menu")]),
             Line::from(vec![Span::raw("  /             Search / Filter accounts by typing email address")]),
             Line::from(vec![Span::raw("  c             Toggle Compact layout view (hides reset countdowns for tablet/portrait)")]),
             Line::from(vec![Span::raw("  v             Open scrollable Session Logs History Explorer overlay")]),
@@ -723,5 +736,44 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
         let tips = Paragraph::new(" [Esc/q/t] Cancel  |  [Enter] Select Theme  |  [j/k, Up/Down] Select preset")
             .style(Style::default().fg(palette.border_inactive));
         f.render_widget(tips, list_chunks[2]);
+    }
+
+    if app.show_sort_menu {
+        let block = Block::default()
+            .title(" ⇅ Select Sort Mode ")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .style(Style::default().bg(palette.bg).fg(palette.border_active));
+        
+        let area = centered_rect(50, 45, f.size());
+        f.render_widget(Clear, area);
+        f.render_widget(block, area);
+
+        let list_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(1),    // Options list
+                Constraint::Length(1), // Footer tips
+            ])
+            .margin(2)
+            .split(area);
+
+        let sort_items: Vec<ListItem> = SORT_OPTIONS.iter().enumerate().map(|(idx, &(label, mode, desc))| {
+            let is_active = app.sort_mode == mode && app.sort_desc == desc;
+            let active_indicator = if is_active { "● " } else { "  " };
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("[{}] ", (idx + 1) % 10), Style::default().fg(palette.border_inactive)),
+                Span::styled(active_indicator, Style::default().fg(palette.green_success)),
+                Span::raw(label),
+            ]))
+        }).collect();
+
+        let list_widget = List::new(sort_items)
+            .highlight_style(Style::default().bg(palette.selection_bg).add_modifier(Modifier::BOLD));
+        f.render_stateful_widget(list_widget, list_chunks[0], &mut app.sort_menu_state);
+
+        let tips = Paragraph::new(" [Esc/q/s] Cancel  |  [Enter] Select  |  [1-0] Select by Hotkey  |  [j/k] Scroll")
+            .style(Style::default().fg(palette.border_inactive));
+        f.render_widget(tips, list_chunks[1]);
     }
 }

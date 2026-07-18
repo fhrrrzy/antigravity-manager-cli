@@ -50,6 +50,8 @@ pub struct App {
     pub theme_search_query: String,
     pub theme_list_state: ListState,
     pub last_auto_refresh: Option<Instant>,
+    pub show_sort_menu: bool,
+    pub sort_menu_state: ListState,
 }
 
 impl App {
@@ -114,6 +116,12 @@ impl App {
             theme_search_query: String::new(),
             theme_list_state,
             last_auto_refresh: None,
+            show_sort_menu: false,
+            sort_menu_state: {
+                let mut s = ListState::default();
+                s.select(Some(0));
+                s
+            },
         };
         app.sort_accounts();
         app
