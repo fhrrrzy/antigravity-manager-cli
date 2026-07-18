@@ -1133,8 +1133,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             app.set_status(&format!("Sorted accounts by: {} ({})", app.sort_mode.to_str(), dir_str));
                                         }
                                     }
-                                } else if mouse.row >= table_area.y + 3 {
-                                    let clicked_idx = app.list_state.offset() + ((mouse.row - (table_area.y + 3)) / 3) as usize;
+                                } else if mouse.row >= table_area.y + 2 {
+                                    let clicked_idx = app.list_state.offset() + ((mouse.row - (table_area.y + 2)) / 3) as usize;
                                     let clicked_account = {
                                         let visible = app.get_visible_accounts();
                                         if clicked_idx < visible.len() {

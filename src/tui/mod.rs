@@ -336,23 +336,15 @@ impl App {
 
         let inner_width = if area.width > 2 { area.width - 2 } else { return None; };
         
-        let fixed_cols_w = 68; // 8 (col0) + 15 * 4 (cols 2-5)
-        let gaps_w = 5;        // 5 spacers of 1 char each
-        
-        let col1_w = if inner_width > fixed_cols_w + gaps_w {
-            inner_width - (fixed_cols_w + gaps_w)
-        } else {
-            30
-        };
-        
-        let widths = [8, col1_w, 15, 15, 15, 15];
-        
+        let percentages = [8, 32, 15, 15, 15, 15];
         let mut cur_x = area.x + 1;
-        for (idx, &w) in widths.iter().enumerate() {
+        
+        for (idx, &pct) in percentages.iter().enumerate() {
+            let w = ((inner_width as u32 * pct) / 100) as u16;
             if col_x >= cur_x && col_x < cur_x + w {
                 return Some(idx);
             }
-            cur_x += w + 1; // width of column + 1 spacer gap
+            cur_x += w;
         }
         None
     }
