@@ -290,6 +290,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         while let Ok(event) = event_rx.try_recv() {
             match event {
                 AppEvent::Key(key) => {
+                    if key.kind == event::KeyEventKind::Release {
+                        continue;
+                    }
                     if key.code == KeyCode::Char('c') && key.modifiers.contains(event::KeyModifiers::CONTROL) {
                         disable_raw_mode()?;
                         execute!(

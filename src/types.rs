@@ -469,3 +469,28 @@ impl ConfigOption {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_layout_preset_helpers() {
+        let preset = LayoutPreset::GeminiFullList;
+        assert!(preset.is_full_list());
+        assert!(preset.show_gemini());
+        assert!(!preset.show_claude());
+
+        let preset_details = LayoutPreset::ClaudeWithDetails;
+        assert!(!preset_details.is_full_list());
+        assert!(!preset_details.show_gemini());
+        assert!(preset_details.show_claude());
+    }
+
+    #[test]
+    fn test_config_option_labels() {
+        assert_eq!(ConfigOption::PrivacyMode.to_str(), "Privacy Mode");
+        assert_eq!(ConfigOption::LayoutPreset.to_str(), "Layout Preset");
+        assert_eq!(ConfigOption::ColorTheme.to_str(), "Color Theme");
+    }
+}
