@@ -448,3 +448,24 @@ impl LayoutPreset {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigOption {
+    PrivacyMode,
+    LayoutPreset,
+    ColorTheme,
+    SortColumn,
+    SortDirection,
+}
+
+impl ConfigOption {
+    pub fn to_str(&self) -> &'static str {
+        match self {
+            ConfigOption::PrivacyMode => "Privacy Mode",
+            ConfigOption::LayoutPreset => "Layout Preset",
+            ConfigOption::ColorTheme => "Color Theme",
+            ConfigOption::SortColumn => "Sort Column",
+            ConfigOption::SortDirection => "Sort Direction",
+        }
+    }
+}

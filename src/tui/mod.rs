@@ -38,7 +38,8 @@ pub struct App {
     pub is_searching: bool,
     pub sort_mode: SortMode,
     pub sort_desc: bool,
-    pub compact_mode: bool,
+    pub show_config_menu: bool,
+    pub config_menu_state: ListState,
     pub show_help: bool,
     pub theme: ThemeType,
     pub show_logs: bool,
@@ -122,7 +123,12 @@ impl App {
             is_searching: false,
             sort_mode: SortMode::Email,
             sort_desc: false,
-            compact_mode: false,
+            show_config_menu: false,
+            config_menu_state: {
+                let mut s = ListState::default();
+                s.select(Some(0));
+                s
+            },
             show_help: false,
             theme,
             show_logs: false,

@@ -10,7 +10,7 @@ use ratatui::{
     }
 };
 
-use crate::types::{Focus, InputMode, QuotaData, COOLDOWN_SECONDS, SortMode, LayoutPreset};
+use crate::types::{Focus, InputMode, QuotaData, COOLDOWN_SECONDS, SortMode, LayoutPreset, ConfigOption};
 use crate::tui::App;
 
 pub const SORT_OPTIONS: &[(&str, SortMode, bool)] = &[
@@ -834,7 +834,7 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
         .wrap(Wrap { trim: true });
     f.render_widget(status_block, chunks[2]);
 
-    let footer = Paragraph::new(" [Enter] Switch | [r] Refresh | [w] Warm Up | [/] Find | [s] Sort | [c] Compact | [p] Privacy | [v] Logs | [t] Theme | [o] Layout | [h] Help")
+    let footer = Paragraph::new(" [Enter] Switch | [r] Refresh | [w] Warm Up | [/] Find | [s] Sort | [c] Config | [p] Privacy | [v] Logs | [t] Theme | [o] Layout | [h] Help")
         .style(Style::default().fg(palette.border_inactive));
     f.render_widget(footer, chunks[3]);
 
@@ -856,7 +856,7 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
             Line::from(vec![Span::raw("  s             Open keyboard-driven Sort Mode Selector menu")]),
             Line::from(vec![Span::raw("  o             Open Layout Preset selector menu (real-time previews)")]),
             Line::from(vec![Span::raw("  /             Search / Filter accounts by typing email address")]),
-            Line::from(vec![Span::raw("  c             Toggle Compact layout view (hides reset times for tablet/portrait)")]),
+            Line::from(vec![Span::raw("  c             Open Configuration Settings menu (interactive btop-style)")]),
             Line::from(vec![Span::raw("  p             Toggle Privacy Mode (masks email addresses in screenshots)")]),
             Line::from(vec![Span::raw("  v             Open scrollable Session Logs History Explorer overlay")]),
             Line::from(vec![Span::raw("  Enter         Activate/Switch session to selected account")]),
@@ -1293,6 +1293,89 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
         f.render_stateful_widget(list_widget, list_chunks[0], &mut app.layout_menu_state);
 
         let tips = Paragraph::new(" [Esc/q/l] Cancel  |  [Enter] Save Layout  |  [1-6] Select by Hotkey  |  [j/k] Scroll")
+            .style(Style::default().fg(palette.border_inactive));
+        f.render_widget(tips, list_chunks[1]);
+    }
+
+    if app.show_config_menu {
+        let block = Block::default()
+            .title(" ⚙ Configuration Settings ")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .style(Style::default().bg(palette.bg).fg(palette.border_active));
+        
+        let area = centered_rect(60, 50, f.size());
+        f.render_widget(Clear, area);
+        f.render_widget(block, area);
+
+        let list_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(1),    // Settings list
+                Constraint::Length(1), // Footer tips
+            ])
+            .margin(2)
+            .split(area);
+
+        // Define setting options list items
+        let visible_options = vec![
+            ConfigOption::PrivacyMode,
+            ConfigOption::LayoutPreset,
+            ConfigOption::ColorTheme,
+            ConfigOption::SortColumn,
+            ConfigOption::SortDirection,
+        ];
+
+        let mut config_items = Vec::new();
+        for (idx, opt) in visible_options.iter().enumerate() {
+            let is_selected = app.config_menu_state.selected() == Some(idx);
+            
+            // Build the dynamic value cycling string
+            let val_str = match opt {
+                ConfigOption::PrivacyMode => {
+                    if app.privacy_mode { "◄ Masked ►".to_string() } else { "◄ Visible ►".to_string() }
+                }
+                ConfigOption::LayoutPreset => {
+                    match app.layout_preset {
+                        LayoutPreset::BothFullList => "◄ Both (Full List) ►",
+                        LayoutPreset::BothWithDetails => "◄ Both (With Details) ►",
+                        LayoutPreset::GeminiFullList => "◄ Gemini Only (Full List) ►",
+                        LayoutPreset::GeminiWithDetails => "◄ Gemini Only (With Details) ►",
+                        LayoutPreset::ClaudeFullList => "◄ Claude Only (Full List) ►",
+                        LayoutPreset::ClaudeWithDetails => "◄ Claude Only (With Details) ►",
+                    }.to_string()
+                }
+                ConfigOption::ColorTheme => {
+                    let t_name = app.theme.to_str();
+                    format!("◄ {} ►", t_name)
+                }
+                ConfigOption::SortColumn => {
+                    let s_name = app.sort_mode.to_str();
+                    format!("◄ {} ►", s_name)
+                }
+                ConfigOption::SortDirection => {
+                    if app.sort_desc { "◄ Descending ►".to_string() } else { "◄ Ascending ►".to_string() }
+                }
+            };
+
+            let label_span = Span::styled(
+                format!("  {:<25}", opt.to_str()),
+                if is_selected { Style::default().fg(palette.fg).add_modifier(Modifier::BOLD) } else { Style::default().fg(palette.border_inactive) }
+            );
+            
+            let val_span = Span::styled(
+                val_str,
+                if is_selected { Style::default().fg(palette.yellow_warning).add_modifier(Modifier::BOLD) } else { Style::default().fg(palette.fg) }
+            );
+
+            config_items.push(ListItem::new(Line::from(vec![label_span, val_span])));
+        }
+
+        let list_widget = List::new(config_items)
+            .highlight_style(Style::default().bg(palette.selection_bg));
+        f.render_stateful_widget(list_widget, list_chunks[0], &mut app.config_menu_state);
+
+        let tips = Paragraph::new(" [Esc/q/c] Exit  |  [j/k, Up/Down] Select setting  |  [h/l, Left/Right] Cycle value")
             .style(Style::default().fg(palette.border_inactive));
         f.render_widget(tips, list_chunks[1]);
     }

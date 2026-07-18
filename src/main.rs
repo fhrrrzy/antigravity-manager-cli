@@ -21,7 +21,7 @@ use ratatui::{
 };
 use serde_json::json;
 
-use types::{AppEvent, InputMode, Focus, SortMode, NetworkResult, AddAccountAction, LayoutPreset};
+use types::{AppEvent, InputMode, Focus, SortMode, NetworkResult, AddAccountAction, LayoutPreset, ConfigOption, ThemeType};
 use config::{load_accounts_list, get_active_email, load_cli_cache, load_warmup_history, get_data_dir, save_cli_cache, delete_account_from_db};
 use tui::{App, spawn_network_task, ui::draw_ui};
 
@@ -568,6 +568,141 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
 
+                    if app.show_config_menu {
+                        let visible_options = vec![
+                            ConfigOption::PrivacyMode,
+                            ConfigOption::LayoutPreset,
+                            ConfigOption::ColorTheme,
+                            ConfigOption::SortColumn,
+                            ConfigOption::SortDirection,
+                        ];
+
+                        match key.code {
+                            KeyCode::Esc | KeyCode::Char('c') | KeyCode::Char('C') | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                                app.show_config_menu = false;
+                                app.set_status("Configuration settings closed.");
+                            }
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                let i = match app.config_menu_state.selected() {
+                                    Some(i) => {
+                                        if i >= visible_options.len() - 1 {
+                                            0
+                                        } else {
+                                            i + 1
+                                        }
+                                    }
+                                    None => 0,
+                                };
+                                app.config_menu_state.select(Some(i));
+                            }
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                let i = match app.config_menu_state.selected() {
+                                    Some(i) => {
+                                        if i == 0 {
+                                            visible_options.len() - 1
+                                        } else {
+                                            i - 1
+                                        }
+                                    }
+                                    None => 0,
+                                };
+                                app.config_menu_state.select(Some(i));
+                            }
+                            KeyCode::Left | KeyCode::Char('h') | KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter => {
+                                let is_left = matches!(key.code, KeyCode::Left | KeyCode::Char('h'));
+                                if let Some(selected_idx) = app.config_menu_state.selected() {
+                                    match visible_options[selected_idx] {
+                                        ConfigOption::PrivacyMode => {
+                                            app.privacy_mode = !app.privacy_mode;
+                                            app.set_status(&format!("Privacy Mode set to: {}", if app.privacy_mode { "Masked" } else { "Visible" }));
+                                        }
+                                        ConfigOption::LayoutPreset => {
+                                            let layouts = vec![
+                                                LayoutPreset::BothFullList,
+                                                LayoutPreset::BothWithDetails,
+                                                LayoutPreset::GeminiFullList,
+                                                LayoutPreset::GeminiWithDetails,
+                                                LayoutPreset::ClaudeFullList,
+                                                LayoutPreset::ClaudeWithDetails,
+                                            ];
+                                            let current_idx = layouts.iter().position(|l| *l == app.layout_preset).unwrap_or(0);
+                                            let next_idx = if is_left {
+                                                if current_idx == 0 { layouts.len() - 1 } else { current_idx - 1 }
+                                            } else {
+                                                if current_idx >= layouts.len() - 1 { 0 } else { current_idx + 1 }
+                                            };
+                                            let selected_preset = layouts[next_idx];
+                                            app.layout_preset = selected_preset;
+                                            app.cli_cache.layout_preset = Some(match selected_preset {
+                                                LayoutPreset::BothFullList => "BothFullList".to_string(),
+                                                LayoutPreset::BothWithDetails => "BothWithDetails".to_string(),
+                                                LayoutPreset::GeminiFullList => "GeminiFullList".to_string(),
+                                                LayoutPreset::GeminiWithDetails => "GeminiWithDetails".to_string(),
+                                                LayoutPreset::ClaudeFullList => "ClaudeFullList".to_string(),
+                                                LayoutPreset::ClaudeWithDetails => "ClaudeWithDetails".to_string(),
+                                            });
+                                            let _ = save_cli_cache(&app.cli_cache);
+                                            app.set_status(&format!("Layout preset set to: {}", selected_preset.to_str()));
+                                        }
+                                        ConfigOption::ColorTheme => {
+                                            let themes = vec![
+                                                ThemeType::KanagawaDragon,
+                                                ThemeType::GruvboxDark,
+                                                ThemeType::Nord,
+                                                ThemeType::Dracula,
+                                                ThemeType::OneDark,
+                                                ThemeType::RetroMatrix,
+                                                ThemeType::SolarizedDark,
+                                                ThemeType::Catppuccin,
+                                                ThemeType::RosePine,
+                                                ThemeType::TokyoNight,
+                                                ThemeType::AyuDark,
+                                            ];
+                                            let current_idx = themes.iter().position(|t| *t == app.theme).unwrap_or(0);
+                                            let next_idx = if is_left {
+                                                if current_idx == 0 { themes.len() - 1 } else { current_idx - 1 }
+                                            } else {
+                                                if current_idx >= themes.len() - 1 { 0 } else { current_idx + 1 }
+                                            };
+                                            let selected_theme = themes[next_idx];
+                                            app.theme = selected_theme;
+                                            app.cli_cache.theme = Some(selected_theme.to_str().to_string());
+                                            let _ = save_cli_cache(&app.cli_cache);
+                                            app.set_status(&format!("Color theme set to: {}", selected_theme.to_str()));
+                                        }
+                                        ConfigOption::SortColumn => {
+                                            let columns = vec![
+                                                SortMode::Email,
+                                                SortMode::Gemini5h,
+                                                SortMode::GeminiWeekly,
+                                                SortMode::Claude5h,
+                                                SortMode::ClaudeWeekly,
+                                                SortMode::Health,
+                                            ];
+                                            let current_idx = columns.iter().position(|c| *c == app.sort_mode).unwrap_or(0);
+                                            let next_idx = if is_left {
+                                                if current_idx == 0 { columns.len() - 1 } else { current_idx - 1 }
+                                            } else {
+                                                if current_idx >= columns.len() - 1 { 0 } else { current_idx + 1 }
+                                            };
+                                            let selected_col = columns[next_idx];
+                                            app.sort_mode = selected_col;
+                                            app.sort_accounts();
+                                            app.set_status(&format!("Sorting column set to: {}", selected_col.to_str()));
+                                        }
+                                        ConfigOption::SortDirection => {
+                                            app.sort_desc = !app.sort_desc;
+                                            app.sort_accounts();
+                                            app.set_status(&format!("Sorting direction set to: {}", if app.sort_desc { "Descending" } else { "Ascending" }));
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+
                     if app.show_layout_menu {
                         let visible_layouts = vec![
                             LayoutPreset::BothFullList,
@@ -883,9 +1018,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         KeyCode::Char('c') | KeyCode::Char('C') => {
                             if !app.is_loading {
-                                app.compact_mode = !app.compact_mode;
-                                let status = if app.compact_mode { "Compact Layout Mode enabled." } else { "Full Layout Mode enabled." };
-                                app.set_status(status);
+                                app.show_config_menu = true;
+                                app.config_menu_state.select(Some(0));
+                                app.set_status("Open Configuration Settings menu. Use Up/Down or j/k to select, Left/Right or h/l to cycle.");
                             }
                         }
                         KeyCode::Char('p') | KeyCode::Char('P') => {
@@ -1173,6 +1308,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             || app.show_logs 
                             || app.show_layout_menu
                             || app.show_sort_menu
+                            || app.show_config_menu
                             || !matches!(app.input_mode, InputMode::Normal);
                         
                         if !modal_active {
