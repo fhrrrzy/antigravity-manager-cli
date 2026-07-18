@@ -991,7 +991,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                     }
                                 } else if mouse.row >= table_area.y + 3 {
-                                    let clicked_idx = ((mouse.row - (table_area.y + 3)) / 2) as usize;
+                                    let clicked_idx = ((mouse.row - (table_area.y + 3)) / 3) as usize;
                                     let clicked_account = {
                                         let visible = app.get_visible_accounts();
                                         if clicked_idx < visible.len() {

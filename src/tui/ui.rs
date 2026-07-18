@@ -246,10 +246,35 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
         let is_selected = app.list_state.selected() == Some(idx);
         let row_bg = if is_selected { palette.selection_bg } else { Color::Reset };
 
+        let raw_tier = app.cli_cache.tokens.get(&acc.email)
+            .and_then(|t| t.subscription_tier.as_ref())
+            .or_else(|| app.cli_cache.quotas.get(&acc.email).and_then(|q| q.subscription_tier.as_ref()))
+            .map(|s| s.to_lowercase())
+            .unwrap_or_default();
+
+        let (tier_display, tier_color) = if raw_tier.contains("ultra") {
+            ("Ultra", palette.violet_reset_weekly)
+        } else if raw_tier.contains("pro") {
+            ("Pro", palette.yellow_warning)
+        } else {
+            ("Free", palette.border_inactive)
+        };
+
+        let email_style = if is_active {
+            Style::default().add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+
+        let email_cell = Cell::from(ratatui::text::Text::from(vec![
+            Line::from(acc.email.clone()).style(email_style),
+            Line::from(format!("└─ {}", tier_display)).style(Style::default().fg(tier_color)),
+        ]));
+
         let top_row_style = Style::default().bg(row_bg).fg(if is_active { palette.green_success } else { palette.fg });
         let top_cells = vec![
             Cell::from(active_mark).style(if is_active { Style::default().fg(palette.green_success) } else { Style::default() }),
-            Cell::from(acc.email.clone()).style(if is_active { Style::default().add_modifier(Modifier::BOLD) } else { Style::default() }),
+            email_cell,
             Cell::from(gemini_5h_bar).style(Style::default().fg(gemini_5h_color)),
             Cell::from(gemini_wk_bar).style(Style::default().fg(gemini_wk_color)),
             Cell::from(claude_5h_bar).style(Style::default().fg(claude_5h_color)),
