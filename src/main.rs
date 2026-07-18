@@ -193,6 +193,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         while let Ok(event) = event_rx.try_recv() {
             match event {
                 AppEvent::Key(key) => {
+                    if key.code == KeyCode::Char('c') && key.modifiers.contains(event::KeyModifiers::CONTROL) {
+                        disable_raw_mode()?;
+                        execute!(
+                            terminal.backend_mut(),
+                            LeaveAlternateScreen,
+                            DisableMouseCapture
+                        )?;
+                        terminal.show_cursor()?;
+                        return Ok(());
+                    }
+
                     if let InputMode::OAuthLogin { .. } = &app.input_mode {
                         if key.code == KeyCode::Esc {
                             app.input_mode = InputMode::Normal;
@@ -980,7 +991,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                     }
                                 } else if mouse.row >= table_area.y + 3 {
-                                    let clicked_idx = (mouse.row - (table_area.y + 3)) as usize;
+                                    let clicked_idx = ((mouse.row - (table_area.y + 3)) / 2) as usize;
                                     let clicked_account = {
                                         let visible = app.get_visible_accounts();
                                         if clicked_idx < visible.len() {

@@ -244,7 +244,7 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
             Cell::from(claude_5h_bar).style(Style::default().fg(claude_5h_color)),
             Cell::from(claude_wk_bar).style(Style::default().fg(claude_wk_color)),
         ];
-        rows.push(Row::new(top_cells).style(top_row_style));
+        rows.push(Row::new(top_cells).style(top_row_style).bottom_margin(1));
     }
 
     let widths: &[Constraint] = &[
