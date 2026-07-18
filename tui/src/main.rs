@@ -475,6 +475,40 @@ fn write_to_system_keyring(_email: &str, access_token: &str, refresh_token: &str
     true
 }
 
+// Writes OAuth credentials directly to active files of Antigravity CLI and IDEs to sync active sessions
+fn write_oauth_token_file(access_token: &str, refresh_token: &str, expiry_timestamp: i64) {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    
+    let dirs_to_sync = [
+        home.join(".gemini").join("antigravity-cli"),
+        home.join(".gemini").join("antigravity"),
+        home.join(".gemini").join("antigravity-ide"),
+    ];
+    
+    let expiry_datetime = chrono::DateTime::from_timestamp(expiry_timestamp, 0)
+        .unwrap_or_else(|| chrono::Utc::now());
+    let expiry_str = expiry_datetime.to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
+    
+    let payload = json!({
+        "token": {
+            "access_token": access_token,
+            "token_type": "Bearer",
+            "refresh_token": refresh_token,
+            "expiry": expiry_str
+        },
+        "auth_method": "consumer"
+    });
+    
+    if let Ok(content) = serde_json::to_string(&payload) {
+        for cli_dir in dirs_to_sync.iter() {
+            if cli_dir.exists() {
+                let token_path = cli_dir.join("antigravity-oauth-token");
+                let _ = fs::write(&token_path, &content);
+            }
+        }
+    }
+}
+
 fn subprocess_exists(cmd: &str) -> bool {
     std::process::Command::new("which")
         .arg(cmd)
@@ -767,6 +801,13 @@ async fn ensure_valid_token(email: &str, refresh_token: &str, cli_cache: &mut Cl
             subscription_tier: tier,
         });
         save_cli_cache(cli_cache);
+        
+        // Sync refreshed active account token immediately to system files/keyrings
+        if cli_cache.active_email.as_ref() == Some(&email.to_string()) {
+            write_to_system_keyring(email, &new_tok, refresh_token, new_exp);
+            write_oauth_token_file(&new_tok, refresh_token, new_exp);
+        }
+        
         Some((new_tok, proj_id))
     } else {
         None
@@ -1114,6 +1155,7 @@ fn spawn_network_task(
                 let expiry = cli_cache.tokens.get(&email).map(|d| d.expiry_timestamp).unwrap_or(now + 3600);
                 
                 let keyring_success = write_to_system_keyring(&email, &access_token, &account.refresh_token, expiry);
+                write_oauth_token_file(&access_token, &account.refresh_token, expiry);
                 
                 let _ = event_tx.send(AppEvent::NetworkSuccess(NetworkResult::SwitchComplete {
                     email: email.clone(),
@@ -1400,6 +1442,7 @@ async fn cli_switch(accounts: &[Account], identifier: &str) {
     if let Some((access_token, _project_id)) = ensure_valid_token(email, &acc.refresh_token, &mut cache).await {
         let expiry = cache.tokens.get(email).map(|t| t.expiry_timestamp).unwrap_or(0);
         let keyring_success = write_to_system_keyring(email, &access_token, &acc.refresh_token, expiry);
+        write_oauth_token_file(&access_token, &acc.refresh_token, expiry);
         
         cache.active_email = Some(email.clone());
         save_cli_cache(&cache);
@@ -1948,7 +1991,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         Style::default()
                     };
                     
-                    // Retrieve cached quotas for left panel display
                     let quota_cache = app.cli_cache.quotas.get(&acc.email);
                     
                     let gemini_pct = quota_cache.and_then(|q| {
@@ -2532,7 +2574,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             save_cli_cache(&app.cli_cache);
                             
-                            // Do not output static status logs if we are reloading all to prevent clutter
                             if app.status_message.starts_with("Ready") || app.status_message.contains("Reloading") {
                                 app.set_status(&format!("Quota statistics refreshed for {}.", email));
                             }
