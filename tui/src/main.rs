@@ -144,6 +144,27 @@ enum NetworkResult {
     },
 }
 
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum SortMode {
+    Email,
+    GeminiQuota,
+    ClaudeQuota,
+    Reset5h,
+    ResetWeekly,
+}
+
+impl SortMode {
+    fn to_str(&self) -> &str {
+        match self {
+            SortMode::Email => "Email",
+            SortMode::GeminiQuota => "Gemini Quota",
+            SortMode::ClaudeQuota => "Claude Quota",
+            SortMode::Reset5h => "5h Reset",
+            SortMode::ResetWeekly => "Weekly Reset",
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Focus {
     Accounts,
@@ -165,6 +186,7 @@ struct App {
     breakdown_state: ListState,
     focused_panel: Focus,
     show_help: bool,
+    sort_mode: SortMode,
 }
 
 impl App {
@@ -176,7 +198,7 @@ impl App {
         let mut breakdown_state = ListState::default();
         breakdown_state.select(Some(0));
         
-        Self {
+        let mut app = Self {
             accounts,
             db_path,
             db_desc,
@@ -191,7 +213,10 @@ impl App {
             breakdown_state,
             focused_panel: Focus::Accounts,
             show_help: false,
-        }
+            sort_mode: SortMode::Email,
+        };
+        app.sort_accounts();
+        app
     }
 
     fn select_next(&mut self) {
@@ -273,6 +298,100 @@ impl App {
     fn get_selected_account(&self) -> Option<&Account> {
         let idx = self.list_state.selected()?;
         self.accounts.get(idx)
+    }
+
+    fn sort_accounts(&mut self) {
+        let selected_email = self.get_selected_account().map(|a| a.email.clone());
+        
+        match self.sort_mode {
+            SortMode::Email => {
+                self.accounts.sort_by(|a, b| a.email.cmp(&b.email));
+            }
+            SortMode::GeminiQuota => {
+                self.accounts.sort_by(|a, b| {
+                    let a_pct = self.cli_cache.quotas.get(&a.email)
+                        .and_then(|q| q.models.iter().find(|m| m.name.contains("gemini") || m.display_name.as_ref().map(|n| n.contains("Gemini")).unwrap_or(false)))
+                        .map(|m| m.percentage)
+                        .unwrap_or(-1);
+                    let b_pct = self.cli_cache.quotas.get(&b.email)
+                        .and_then(|q| q.models.iter().find(|m| m.name.contains("gemini") || m.display_name.as_ref().map(|n| n.contains("Gemini")).unwrap_or(false)))
+                        .map(|m| m.percentage)
+                        .unwrap_or(-1);
+                    b_pct.cmp(&a_pct)
+                });
+            }
+            SortMode::ClaudeQuota => {
+                self.accounts.sort_by(|a, b| {
+                    let a_pct = self.cli_cache.quotas.get(&a.email)
+                        .and_then(|q| q.models.iter().find(|m| m.name.contains("claude") || m.display_name.as_ref().map(|n| n.contains("Claude")).unwrap_or(false)))
+                        .map(|m| m.percentage)
+                        .unwrap_or(-1);
+                    let b_pct = self.cli_cache.quotas.get(&b.email)
+                        .and_then(|q| q.models.iter().find(|m| m.name.contains("claude") || m.display_name.as_ref().map(|n| n.contains("Claude")).unwrap_or(false)))
+                        .map(|m| m.percentage)
+                        .unwrap_or(-1);
+                    b_pct.cmp(&a_pct)
+                });
+            }
+            SortMode::Reset5h => {
+                self.accounts.sort_by(|a, b| {
+                    let get_reset_time = |email: &str| -> Option<String> {
+                        let quota_cache = self.cli_cache.quotas.get(email)?;
+                        let groups = quota_cache.quota_groups.as_ref()?;
+                        for group in groups {
+                            for bucket in &group.buckets {
+                                if bucket.window == "5h" || bucket.bucket_id.contains("5h") {
+                                    if !bucket.reset_time.is_empty() {
+                                        return Some(bucket.reset_time.clone());
+                                    }
+                                }
+                            }
+                        }
+                        None
+                    };
+                    let a_time = get_reset_time(&a.email);
+                    let b_time = get_reset_time(&b.email);
+                    match (a_time, b_time) {
+                        (Some(t1), Some(t2)) => t1.cmp(&t2),
+                        (Some(_), None) => std::cmp::Ordering::Less,
+                        (None, Some(_)) => std::cmp::Ordering::Greater,
+                        (None, None) => std::cmp::Ordering::Equal,
+                    }
+                });
+            }
+            SortMode::ResetWeekly => {
+                self.accounts.sort_by(|a, b| {
+                    let get_reset_time = |email: &str| -> Option<String> {
+                        let quota_cache = self.cli_cache.quotas.get(email)?;
+                        let groups = quota_cache.quota_groups.as_ref()?;
+                        for group in groups {
+                            for bucket in &group.buckets {
+                                if bucket.window == "weekly" || bucket.bucket_id.contains("weekly") {
+                                    if !bucket.reset_time.is_empty() {
+                                        return Some(bucket.reset_time.clone());
+                                    }
+                                }
+                            }
+                        }
+                        None
+                    };
+                    let a_time = get_reset_time(&a.email);
+                    let b_time = get_reset_time(&b.email);
+                    match (a_time, b_time) {
+                        (Some(t1), Some(t2)) => t1.cmp(&t2),
+                        (Some(_), None) => std::cmp::Ordering::Less,
+                        (None, Some(_)) => std::cmp::Ordering::Greater,
+                        (None, None) => std::cmp::Ordering::Equal,
+                    }
+                });
+            }
+        }
+        
+        if let Some(email) = selected_email {
+            if let Some(pos) = self.accounts.iter().position(|a| a.email == email) {
+                self.list_state.select(Some(pos));
+            }
+        }
     }
 
     fn set_status(&mut self, msg: &str) {
@@ -2336,7 +2455,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ];
 
             let table_border_color = if app.focused_panel == Focus::Accounts { Color::Cyan } else { Color::DarkGray };
-            let table_title = if app.focused_panel == Focus::Accounts { " Accounts Summary (Active Panel) " } else { " Accounts Summary " };
+            let table_title = if app.focused_panel == Focus::Accounts {
+                format!(" Accounts Summary (Active Panel - Sorted by: {}) ", app.sort_mode.to_str())
+            } else {
+                format!(" Accounts Summary (Sorted by: {}) ", app.sort_mode.to_str())
+            };
 
             let account_table = Table::new(rows, widths)
                 .header(header)
@@ -2479,7 +2602,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .wrap(Wrap { trim: true });
             f.render_widget(status_block, chunks[2]);
 
-            let footer = Paragraph::new(" [Enter] Switch | [r] Refresh | [R] Refresh All | [w] Warm Up | [W] Warm All | [Tab] Switch Panel | [h] Help | [q] Quit")
+            let footer = Paragraph::new(" [Enter] Switch | [r] Refresh | [w] Warm Up | [Tab] Focus | [s] Sort | [h] Help | [q] Quit")
                 .style(Style::default().fg(Color::DarkGray));
             f.render_widget(footer, chunks[3]);
 
@@ -2494,10 +2617,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 f.render_widget(block, area);
 
                 let help_text = vec![
-                    Line::from(vec![Span::styled("Navigation keys:", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))]),
+                    Line::from(vec![Span::styled("Navigation & Layout:", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))]),
                     Line::from(vec![Span::raw("  Tab           Switch panel focus (Accounts Table <-> Quotas Breakdown)")]),
                     Line::from(vec![Span::raw("  j / Down      Select next item in active panel")]),
                     Line::from(vec![Span::raw("  k / Up        Select previous item in active panel")]),
+                    Line::from(vec![Span::raw("  s             Cycle table sorting (Email -> Gemini -> Claude -> 5h -> Weekly")]),
                     Line::from(vec![Span::raw("  Enter         Activate/Switch session to selected account")]),
                     Line::from(vec![Span::raw("")]),
                     Line::from(vec![Span::styled("Quota & Session actions:", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))]),
@@ -2984,6 +3108,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                         }
+                        KeyCode::Char('s') | KeyCode::Char('S') => {
+                            if !app.is_loading {
+                                app.sort_mode = match app.sort_mode {
+                                    SortMode::Email => SortMode::GeminiQuota,
+                                    SortMode::GeminiQuota => SortMode::ClaudeQuota,
+                                    SortMode::ClaudeQuota => SortMode::Reset5h,
+                                    SortMode::Reset5h => SortMode::ResetWeekly,
+                                    SortMode::ResetWeekly => SortMode::Email,
+                                };
+                                app.sort_accounts();
+                                app.set_status(&format!("Sorted accounts by: {}", app.sort_mode.to_str()));
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -2998,6 +3135,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             
                             let (reload_accs, _, _) = load_accounts_list();
                             app.accounts = reload_accs;
+                            app.sort_accounts();
                             
                             if let Some(pos) = app.accounts.iter().position(|a| a.email == new_account.email) {
                                 app.list_state.select(Some(pos));
@@ -3051,6 +3189,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                             save_cli_cache(&app.cli_cache);
+                            app.sort_accounts();
                             
                             if app.status_message.starts_with("Ready") || app.status_message.contains("Reloading") {
                                 app.set_status(&format!("Quota statistics refreshed for {}.", email));
