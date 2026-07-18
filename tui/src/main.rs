@@ -930,7 +930,7 @@ async fn cli_switch(accounts: &[Account], identifier: &str) {
     let email = &acc.email;
     println!("Switching active account to: {}...", email);
     
-    if let Some((access_token, project_id)) = ensure_valid_token(email, &acc.refresh_token, &mut cache).await {
+    if let Some((access_token, _project_id)) = ensure_valid_token(email, &acc.refresh_token, &mut cache).await {
         let expiry = cache.tokens.get(email).map(|t| t.expiry_timestamp).unwrap_or(0);
         let keyring_success = write_to_system_keyring(email, &access_token, &acc.refresh_token, expiry);
         
@@ -1010,7 +1010,7 @@ async fn cli_quota(accounts: &[Account], active_email: Option<&str>, identifier:
         
         match async_fetch_quota(&access_token, project_id.as_deref()).await {
             Ok(models) => {
-                cache.quotas.insert(target_email.clone(), QuotaData {
+                cache.quotas.insert(target_email.to_string(), QuotaData {
                     subscription_tier: tier.or_else(|| cache.tokens.get(target_email).and_then(|t| t.subscription_tier.clone())),
                     models,
                 });
@@ -1096,9 +1096,9 @@ async fn cli_warmup(accounts: &[Account], active_email: Option<&str>, identifier
             to_warm.push(m.clone());
         } else {
             to_warm.push(ModelQuota {
-                name: m_name.clone(),
+                name: m_name.to_string(),
                 percentage: 100,
-                display_name: Some(m_name.clone()),
+                display_name: Some(m_name.to_string()),
                 reset_time: String::new(),
             });
         }
