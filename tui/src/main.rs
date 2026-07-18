@@ -281,7 +281,6 @@ fn save_warmup_history(history: &HashMap<String, i64>) {
 
 // Load accounts index or backup
 fn load_accounts_list() -> (Vec<Account>, PathBuf, String) {
-    // Try primary backup path first
     let backup_paths = [
         "/data/data/com.termux/files/home/.antigravity_tools/antigravity_accounts_2026-07-17.json",
         "/home/fhrrrzy/Downloads/antigravity_accounts_2026-07-17.json",
@@ -317,7 +316,6 @@ fn load_accounts_list() -> (Vec<Account>, PathBuf, String) {
         }
     }
 
-    // Fallback: Official accounts.json
     let data_dir = get_data_dir();
     let index_path = data_dir.join("accounts.json");
     if index_path.exists() {
@@ -379,7 +377,6 @@ fn get_active_email(accounts: &[Account]) -> Option<String> {
         }
     }
     
-    // Fallback: Official active account in accounts.json
     let index_path = get_data_dir().join("accounts.json");
     if index_path.exists() {
         if let Ok(content) = fs::read_to_string(&index_path) {
@@ -406,7 +403,6 @@ fn get_active_email(accounts: &[Account]) -> Option<String> {
         }
     }
     
-    // Fallback to first
     if !accounts.is_empty() {
         return Some(accounts[0].email.clone());
     }
@@ -663,6 +659,8 @@ async fn async_fetch_quota(access_token: &str, project_id: Option<&str>) -> Resu
                                     || name.starts_with("gpt")
                                     || name.starts_with("image")
                                     || name.starts_with("imagen")
+                                    || name.contains("flash")
+                                    || name.contains("lite")
                                 {
                                     models.push(ModelQuota {
                                         name,
@@ -987,6 +985,40 @@ fn spawn_network_task(
         let now = chrono::Utc::now().timestamp();
         
         match action {
+            "quota_all" => {
+                let mut total_refreshed = 0;
+                let count_accs = accounts_all.len();
+                
+                for (idx, acc) in accounts_all.iter().enumerate() {
+                    let email = &acc.email;
+                    let _ = event_tx.send(AppEvent::Progress(format!("[{}/{}] Reloading quota for {}...", idx + 1, count_accs, email)));
+                    
+                    let token_info = ensure_valid_token(email, &acc.refresh_token, &mut cli_cache).await;
+                    if token_info.is_none() {
+                        continue;
+                    }
+                    let (access_token, resolved_proj_id) = token_info.unwrap();
+                    
+                    if let Ok(models) = async_fetch_quota(&access_token, resolved_proj_id.as_deref()).await {
+                        let tier = cli_cache.tokens.get(email).and_then(|d| d.subscription_tier.clone());
+                        let q = QuotaData {
+                            subscription_tier: tier,
+                            models,
+                        };
+                        
+                        // Send incremental update back to TUI right away
+                        let _ = event_tx.send(AppEvent::NetworkSuccess(NetworkResult::QuotaRefreshed {
+                            email: email.clone(),
+                            quota: q,
+                            project_id: resolved_proj_id,
+                        }));
+                        total_refreshed += 1;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                
+                let _ = event_tx.send(AppEvent::Progress(format!("✓ Quota reload complete. Refreshed {}/{} accounts.", total_refreshed, count_accs)));
+            }
             "oauth_login" => {
                 let db_path = new_acc_details.unwrap().2;
                 let _ = event_tx.send(AppEvent::Progress("Starting local OAuth listener on loopback...".to_string()));
@@ -1403,6 +1435,68 @@ async fn cli_switch(accounts: &[Account], identifier: &str) {
 }
 
 async fn cli_quota(accounts: &[Account], active_email: Option<&str>, identifier: Option<&str>, refresh: bool) {
+    let mut cache = load_cli_cache();
+
+    if identifier == Some("all") {
+        if refresh {
+            println!("Refreshing quotas for ALL configured accounts sequentially...");
+            let count_accs = accounts.len();
+            for (idx, acc) in accounts.iter().enumerate() {
+                let email = &acc.email;
+                println!("[{}/{}] Fetching quota for {}...", idx + 1, count_accs, email);
+                
+                let (access_token, mut project_id) = match ensure_valid_token(email, &acc.refresh_token, &mut cache).await {
+                    Some(t) => t,
+                    None => {
+                        eprintln!("✗ Error: Failed to validate credentials for {}. Skipping.", email);
+                        continue;
+                    }
+                };
+                
+                let (api_proj, tier) = async_fetch_project_and_tier(&access_token).await;
+                if api_proj.is_some() {
+                    project_id = api_proj.clone();
+                    if let Some(tc) = cache.tokens.get_mut(email) {
+                        tc.project_id = api_proj;
+                        tc.subscription_tier = tier.clone();
+                    }
+                }
+                
+                match async_fetch_quota(&access_token, project_id.as_deref()).await {
+                    Ok(models) => {
+                        cache.quotas.insert(email.clone(), QuotaData {
+                            subscription_tier: tier.or_else(|| cache.tokens.get(email).and_then(|t| t.subscription_tier.clone())),
+                            models,
+                        });
+                        save_cli_cache(&cache);
+                        println!("✓ Quota updated.");
+                    }
+                    Err(e) => {
+                        eprintln!("✗ Error: {}", e);
+                    }
+                }
+            }
+            println!("Quotas refresh complete.");
+        }
+        
+        for acc in accounts {
+            let email = &acc.email;
+            if let Some(q) = cache.quotas.get(email) {
+                println!("\nQuota for {}:", email);
+                let proj = cache.tokens.get(email).and_then(|t| t.project_id.as_deref()).unwrap_or("N/A");
+                println!("Subscription Tier: {} | Project: {}", q.subscription_tier.as_deref().unwrap_or("N/A"), proj);
+                println!("--------------------------------------------------");
+                for m in &q.models {
+                    let display = m.display_name.as_deref().unwrap_or(&m.name);
+                    println!("  {:<35} : {}%", display, m.percentage);
+                }
+            } else {
+                println!("\nQuota for {}: No cached metrics. Run with '--refresh'.", email);
+            }
+        }
+        return;
+    }
+
     let target_email = match identifier {
         Some(id) => match find_account_by_identifier(accounts, id) {
             Some(a) => &a.email,
@@ -1421,7 +1515,6 @@ async fn cli_quota(accounts: &[Account], active_email: Option<&str>, identifier:
     };
     
     let acc = accounts.iter().find(|a| a.email == *target_email).unwrap();
-    let mut cache = load_cli_cache();
     
     let (access_token, mut project_id) = match ensure_valid_token(target_email, &acc.refresh_token, &mut cache).await {
         Some(t) => t,
@@ -1763,11 +1856,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  agm list              List configured accounts");
                 println!("  agm switch <id>       Switch the active account");
                 println!("  agm quota [id] [-r]   Display quotas (use --refresh to update)");
+                println!("  agm quota all [-r]    Display/Refresh quotas for ALL accounts");
                 println!("  agm warmup [id] [flg] Run warmup cycles (use --model <name> or --force)");
                 println!("  agm warmup all        Sequentially warm up ALL configured accounts");
                 println!("\nExamples:");
                 println!("  agm switch 3");
-                println!("  agm quota --refresh");
+                println!("  agm quota all --refresh");
                 println!("  agm warmup all");
             }
             _ => {
@@ -1838,8 +1932,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let content_chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([
-                    Constraint::Percentage(45), // Left panel: Account list
-                    Constraint::Percentage(55), // Right panel: Quotas/Details
+                    Constraint::Percentage(50), // Left panel: Account list & Quota summary
+                    Constraint::Percentage(50), // Right panel: Details
                 ])
                 .split(chunks[1]);
 
@@ -1854,13 +1948,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         Style::default()
                     };
                     
+                    // Retrieve cached quotas for left panel display
+                    let quota_cache = app.cli_cache.quotas.get(&acc.email);
+                    
+                    let gemini_pct = quota_cache.and_then(|q| {
+                        q.models.iter()
+                            .find(|m| m.name.contains("flash-lite") || m.name.contains("flash_lite") || m.name.contains("flash_lite_preview") || m.display_name.as_ref().map(|n| n.contains("Flash Lite")).unwrap_or(false))
+                            .map(|m| m.percentage)
+                    });
+                    
+                    let claude_pct = quota_cache.and_then(|q| {
+                        q.models.iter()
+                            .find(|m| m.name.contains("claude") || m.display_name.as_ref().map(|n| n.contains("Claude")).unwrap_or(false))
+                            .map(|m| m.percentage)
+                    });
+
+                    let gemini_pct_str = match gemini_pct {
+                        Some(pct) => format!("G:{}%", pct),
+                        None => "G:--".to_string(),
+                    };
+                    let claude_pct_str = match claude_pct {
+                        Some(pct) => format!("C:{}%", pct),
+                        None => "C:--".to_string(),
+                    };
+
+                    let gemini_style = match gemini_pct {
+                        Some(pct) if pct >= 80 => Style::default().fg(Color::Rgb(50, 200, 50)),
+                        Some(pct) if pct >= 30 => Style::default().fg(Color::Rgb(240, 170, 30)),
+                        Some(_) => Style::default().fg(Color::Rgb(220, 50, 50)),
+                        None => Style::default().fg(Color::DarkGray),
+                    };
+
+                    let claude_style = match claude_pct {
+                        Some(pct) if pct >= 80 => Style::default().fg(Color::Rgb(50, 200, 50)),
+                        Some(pct) if pct >= 30 => Style::default().fg(Color::Rgb(240, 170, 30)),
+                        Some(_) => Style::default().fg(Color::Rgb(220, 50, 50)),
+                        None => Style::default().fg(Color::DarkGray),
+                    };
+
                     let mut spans = vec![
                         Span::styled(prefix, style),
-                        Span::styled(format!("{:<30}", acc.email), style),
-                        Span::styled(format!(" ({})", acc.name), Style::default().fg(Color::DarkGray)),
+                        Span::styled(format!("{:<27}", acc.email), style),
+                        Span::styled(" (", Style::default().fg(Color::DarkGray)),
+                        Span::styled(gemini_pct_str, gemini_style),
+                        Span::styled(" | ", Style::default().fg(Color::DarkGray)),
+                        Span::styled(claude_pct_str, claude_style),
+                        Span::styled(")", Style::default().fg(Color::DarkGray)),
                     ];
                     if is_active {
-                        spans.push(Span::styled(" [ACTIVE]", Style::default().fg(Color::Rgb(50, 200, 50)).add_modifier(Modifier::BOLD)));
+                        spans.push(Span::styled(" ★", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)));
                     }
                     
                     ListItem::new(Line::from(spans))
@@ -1868,7 +2004,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .collect();
 
             let account_list = List::new(items)
-                .block(Block::default().borders(Borders::ALL).title(" Accounts Directory ").style(Style::default().fg(Color::Cyan)))
+                .block(Block::default().borders(Borders::ALL).title(" Accounts Summary ").style(Style::default().fg(Color::Cyan)))
                 .highlight_style(Style::default().bg(Color::Rgb(50, 50, 70)).add_modifier(Modifier::BOLD));
             f.render_stateful_widget(account_list, content_chunks[0], &mut app.list_state);
 
@@ -1993,11 +2129,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .wrap(Wrap { trim: true });
             f.render_widget(status_block, chunks[2]);
 
-            let footer = Paragraph::new(" [Enter] Switch Active | [r] Refresh Quota | [w] Warm Up | [W] Warm All | [a] Add Custom | [l] OAuth Login | [q] Quit")
+            let footer = Paragraph::new(" [Enter] Switch | [r] Refresh Quota | [R] Refresh All | [w] Warm Up | [W] Warm All | [a] Custom | [l] Login | [q] Quit")
                 .style(Style::default().fg(Color::DarkGray));
             f.render_widget(footer, chunks[3]);
 
-            // Render Add Account popup Modal
             if let InputMode::AddAccount { email, refresh_token, active_field, error_message } = &app.input_mode {
                 let block = Block::default()
                     .title(" Add Custom Account ")
@@ -2047,7 +2182,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 f.render_widget(help_text, modal_chunks[3]);
             }
 
-            // Render OAuth Login Modal
             if let InputMode::OAuthLogin { auth_url } = &app.input_mode {
                 let block = Block::default()
                     .title(" Google OAuth Authentication ")
@@ -2060,10 +2194,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let modal_chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
-                        Constraint::Length(2), // Intro
-                        Constraint::Length(5), // URL box
-                        Constraint::Length(2), // Status description
-                        Constraint::Min(1),    // Awaiting info
+                        Constraint::Length(2),
+                        Constraint::Length(5),
+                        Constraint::Length(2),
+                        Constraint::Min(1),
                     ])
                     .margin(2)
                     .split(area);
@@ -2095,18 +2229,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         while let Ok(event) = event_rx.try_recv() {
             match event {
                 AppEvent::Key(key) => {
-                    // 1. Intercept OAuthLogin Modal key inputs
                     if let InputMode::OAuthLogin { .. } = &app.input_mode {
                         if key.code == KeyCode::Esc {
                             app.input_mode = InputMode::Normal;
                             app.set_status("OAuth login session cancelled.");
-                            // Re-enable interactions
                             app.is_loading = false;
                         }
                         continue;
                     }
 
-                    // 2. Intercept AddAccount Modal key inputs
                     let mut add_account_action = None;
                     if let InputMode::AddAccount { .. } = &app.input_mode {
                         match key.code {
@@ -2184,7 +2315,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
 
-                    // 3. Normal key inputs
                     match key.code {
                         KeyCode::Char('q') | KeyCode::Esc => {
                             disable_raw_mode()?;
@@ -2242,6 +2372,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         None,
                                     );
                                 }
+                            }
+                        }
+                        KeyCode::Char('R') => {
+                            if !app.is_loading {
+                                app.is_loading = true;
+                                app.set_status("Initializing non-blocking Quotas Reload for ALL accounts...");
+                                spawn_network_task(
+                                    event_tx.clone(),
+                                    None,
+                                    app.accounts.clone(),
+                                    app.cli_cache.clone(),
+                                    app.warmup_history.clone(),
+                                    "quota_all",
+                                    None,
+                                    false,
+                                    None,
+                                );
                             }
                         }
                         KeyCode::Char('w') => {
@@ -2311,24 +2458,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         KeyCode::Char('l') => {
                             if !app.is_loading {
-                                // Construct Google OAuth Consent login url
                                 let auth_url = format!(
                                     "https://accounts.google.com/o/oauth2/v2/auth?client_id={}&redirect_uri=http://localhost:{}&response_type=code&scope=email+profile&access_type=offline&prompt=consent",
                                     CLIENT_ID, OAUTH_PORT
                                 );
                                 
-                                // Launch Browser on background thread
                                 let url_clone = auth_url.clone();
                                 tokio::spawn(async move {
                                     let _ = open_browser(&url_clone);
                                 });
                                 
-                                // Enable OAuth Loading screen overlay
                                 app.is_loading = true;
                                 app.input_mode = InputMode::OAuthLogin { auth_url };
                                 app.set_status("Starting Google OAuth loopback session on port 14210. Check browser...");
                                 
-                                // Spawn background loopback listener task
                                 spawn_network_task(
                                     event_tx.clone(),
                                     None,
@@ -2388,7 +2531,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                             save_cli_cache(&app.cli_cache);
-                            app.set_status(&format!("Quota statistics refreshed for {}.", email));
+                            
+                            // Do not output static status logs if we are reloading all to prevent clutter
+                            if app.status_message.starts_with("Ready") || app.status_message.contains("Reloading") {
+                                app.set_status(&format!("Quota statistics refreshed for {}.", email));
+                            }
                         }
                         NetworkResult::WarmupComplete { email, warmup_count, skipped_count, logs } => {
                             app.warmup_history = load_warmup_history();
@@ -2433,7 +2580,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             error_message: Some(err.clone()),
                         };
                     } else if let InputMode::OAuthLogin { .. } = &app.input_mode {
-                        // Close OAuth Modal on error
                         app.input_mode = InputMode::Normal;
                     }
                 }
