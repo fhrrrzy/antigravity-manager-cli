@@ -187,6 +187,8 @@ struct App {
     focused_panel: Focus,
     show_help: bool,
     sort_mode: SortMode,
+    search_query: String,
+    is_searching: bool,
 }
 
 impl App {
@@ -214,9 +216,20 @@ impl App {
             focused_panel: Focus::Accounts,
             show_help: false,
             sort_mode: SortMode::Email,
+            search_query: String::new(),
+            is_searching: false,
         };
         app.sort_accounts();
         app
+    }
+
+    fn get_visible_accounts(&self) -> Vec<&Account> {
+        if self.search_query.is_empty() {
+            self.accounts.iter().collect()
+        } else {
+            let query = self.search_query.to_lowercase();
+            self.accounts.iter().filter(|a| a.email.to_lowercase().contains(&query)).collect()
+        }
     }
 
     fn select_next(&mut self) {
@@ -241,12 +254,13 @@ impl App {
             }
         }
 
-        if self.accounts.is_empty() {
+        let visible = self.get_visible_accounts();
+        if visible.is_empty() {
             return;
         }
         let i = match self.list_state.selected() {
             Some(i) => {
-                if i >= self.accounts.len() - 1 {
+                if i >= visible.len() - 1 {
                     0
                 } else {
                     i + 1
@@ -279,13 +293,14 @@ impl App {
             }
         }
 
-        if self.accounts.is_empty() {
+        let visible = self.get_visible_accounts();
+        if visible.is_empty() {
             return;
         }
         let i = match self.list_state.selected() {
             Some(i) => {
                 if i == 0 {
-                    self.accounts.len() - 1
+                    visible.len() - 1
                 } else {
                     i - 1
                 }
@@ -297,7 +312,8 @@ impl App {
 
     fn get_selected_account(&self) -> Option<&Account> {
         let idx = self.list_state.selected()?;
-        self.accounts.get(idx)
+        let visible = self.get_visible_accounts();
+        visible.get(idx).copied()
     }
 
     fn sort_accounts(&mut self) {
@@ -2367,7 +2383,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .height(1)
                 .bottom_margin(1);
 
-            let rows: Vec<Row> = app.accounts
+            let rows: Vec<Row> = app.get_visible_accounts()
                 .iter()
                 .map(|acc| {
                     let is_active = app.active_email.as_ref() == Some(&acc.email);
@@ -2455,10 +2471,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ];
 
             let table_border_color = if app.focused_panel == Focus::Accounts { Color::Cyan } else { Color::DarkGray };
-            let table_title = if app.focused_panel == Focus::Accounts {
-                format!(" Accounts Summary (Active Panel - Sorted by: {}) ", app.sort_mode.to_str())
+            let table_title = if app.is_searching {
+                format!(" Accounts Summary (Sorted by: {}) | 🔍 Find: {}_ ", app.sort_mode.to_str(), app.search_query)
+            } else if !app.search_query.is_empty() {
+                format!(" Accounts Summary (Sorted by: {}) | 🔍 Filter: {} (Esc to Clear) ", app.sort_mode.to_str(), app.search_query)
+            } else if app.focused_panel == Focus::Accounts {
+                format!(" Accounts Summary (Active Panel - Sorted by: {}) | [/] Find ", app.sort_mode.to_str())
             } else {
-                format!(" Accounts Summary (Sorted by: {}) ", app.sort_mode.to_str())
+                format!(" Accounts Summary (Sorted by: {}) | [/] Find ", app.sort_mode.to_str())
             };
 
             let account_table = Table::new(rows, widths)
@@ -2786,6 +2806,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             app.input_mode = InputMode::Normal;
                             app.set_status("OAuth login session cancelled.");
                             app.is_loading = false;
+                        }
+                        continue;
+                    }
+
+                    if app.is_searching {
+                        match key.code {
+                            KeyCode::Esc => {
+                                app.is_searching = false;
+                                app.search_query.clear();
+                                app.list_state.select(Some(0));
+                                app.set_status("Filter cleared.");
+                            }
+                            KeyCode::Enter => {
+                                app.is_searching = false;
+                                app.set_status(&format!("Locked filter: {}", app.search_query));
+                            }
+                            KeyCode::Backspace => {
+                                app.search_query.pop();
+                                app.list_state.select(Some(0));
+                            }
+                            KeyCode::Char(c) => {
+                                app.search_query.push(c);
+                                app.list_state.select(Some(0));
+                            }
+                            _ => {}
                         }
                         continue;
                     }
@@ -3119,6 +3164,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 };
                                 app.sort_accounts();
                                 app.set_status(&format!("Sorted accounts by: {}", app.sort_mode.to_str()));
+                            }
+                        }
+                        KeyCode::Char('/') => {
+                            if !app.is_loading {
+                                app.is_searching = true;
+                                app.search_query.clear();
+                                app.set_status("Filter: Type query. Press Enter to lock, Esc to clear.");
                             }
                         }
                         _ => {}
