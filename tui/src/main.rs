@@ -102,6 +102,9 @@ enum InputMode {
     OAuthLogin {
         auth_url: String,
     },
+    ConfirmDelete {
+        email: String,
+    },
 }
 
 enum AddAccountAction {
@@ -1063,6 +1066,73 @@ fn add_account_to_db(path: &Path, email: &str, refresh_token: &str) -> Result<Ac
                     source: "Tauri official database".to_string(),
                     id: Some(new_id),
                 });
+            }
+        }
+    }
+    
+    Err("Unknown/Unsupported database format.".to_string())
+}
+
+fn delete_account_from_db(path: &Path, email: &str) -> Result<(), String> {
+    if !path.exists() {
+        return Err("Database file does not exist.".to_string());
+    }
+    
+    let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let cleaned = content.replace("\u{feff}", "").replace('\x00', "");
+    
+    if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&cleaned) {
+        if let Some(arr) = val.as_array_mut() {
+            let len_before = arr.len();
+            arr.retain(|x| x.get("email").and_then(|e| e.as_str()) != Some(email));
+            if arr.len() == len_before {
+                return Err("Account not found in database.".to_string());
+            }
+            let new_content = serde_json::to_string_pretty(&val).map_err(|e| e.to_string())?;
+            fs::write(path, new_content).map_err(|e| e.to_string())?;
+            return Ok(());
+        } else if let Some(obj) = val.as_object_mut() {
+            let mut deleted_id = None;
+            let accounts_arr = obj.get_mut("accounts").and_then(|a| a.as_array_mut());
+            if let Some(arr) = accounts_arr {
+                let mut kept_arr = Vec::new();
+                for x in arr.iter() {
+                    if x.get("email").and_then(|e| e.as_str()) == Some(email) {
+                        deleted_id = x.get("id").and_then(|i| i.as_str()).map(|s| s.to_string());
+                    } else {
+                        kept_arr.push(x.clone());
+                    }
+                }
+                if deleted_id.is_none() {
+                    return Err("Account not found in database.".to_string());
+                }
+                *arr = kept_arr;
+            }
+            
+            if let Some(ref d_id) = deleted_id {
+                let data_dir = path.parent().unwrap();
+                let acc_file = data_dir.join("accounts").join(format!("{}.json", d_id));
+                if acc_file.exists() {
+                    let _ = fs::remove_file(acc_file);
+                }
+                
+                if obj.get("current_account_id").and_then(|c| c.as_str()) == Some(d_id) {
+                    let accounts_arr = obj.get("accounts").and_then(|a| a.as_array());
+                    if let Some(arr) = accounts_arr {
+                        if !arr.is_empty() {
+                            let first_id = arr[0].get("id").unwrap().clone();
+                            obj.insert("current_account_id".to_string(), first_id);
+                        } else {
+                            obj.remove("current_account_id");
+                        }
+                    } else {
+                        obj.remove("current_account_id");
+                    }
+                }
+                
+                let new_content = serde_json::to_string_pretty(&val).map_err(|e| e.to_string())?;
+                fs::write(path, new_content).map_err(|e| e.to_string())?;
+                return Ok(());
             }
         }
     }
@@ -2545,6 +2615,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .style(Style::default().fg(Color::DarkGray));
                 f.render_widget(footer_help, modal_chunks[3]);
             }
+
+            if let InputMode::ConfirmDelete { email } = &app.input_mode {
+                let block = Block::default()
+                    .title(" Delete Account Confirmation ")
+                    .borders(Borders::ALL)
+                    .style(Style::default().bg(Color::Rgb(25, 20, 20)).fg(Color::Rgb(220, 50, 50)));
+                
+                let area = centered_rect(50, 35, f.size());
+                f.render_widget(Clear, area);
+                f.render_widget(block, area);
+
+                let modal_chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(3),
+                        Constraint::Length(3),
+                        Constraint::Min(1),
+                    ])
+                    .margin(2)
+                    .split(area);
+
+                let warn_desc = Paragraph::new(format!(
+                    "Are you sure you want to permanently delete the following account from your database?\n\n  {}",
+                    email
+                ))
+                .wrap(Wrap { trim: true })
+                .style(Style::default().fg(Color::White));
+                f.render_widget(warn_desc, modal_chunks[0]);
+
+                let alert = Paragraph::new("This action cannot be undone and will delete the account file!")
+                    .style(Style::default().fg(Color::Rgb(220, 50, 50)).add_modifier(Modifier::BOLD));
+                f.render_widget(alert, modal_chunks[1]);
+
+                let prompt = Paragraph::new(" [y] Yes, Delete Account  |  [n] No, Cancel (Esc)")
+                    .style(Style::default().fg(Color::DarkGray));
+                f.render_widget(prompt, modal_chunks[2]);
+            }
         })?;
 
         while let Ok(event) = event_rx.try_recv() {
@@ -2555,6 +2662,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             app.input_mode = InputMode::Normal;
                             app.set_status("OAuth login session cancelled.");
                             app.is_loading = false;
+                        }
+                        continue;
+                    }
+
+                    if let InputMode::ConfirmDelete { email } = &app.input_mode {
+                        match key.code {
+                            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                let email_clone = email.clone();
+                                let res = delete_account_from_db(&app.db_path, &email_clone);
+                                app.input_mode = InputMode::Normal;
+                                match res {
+                                    Ok(_) => {
+                                        app.accounts.retain(|a| a.email != email_clone);
+                                        app.cli_cache.tokens.remove(&email_clone);
+                                        app.cli_cache.quotas.remove(&email_clone);
+                                        
+                                        if app.active_email.as_ref() == Some(&email_clone) {
+                                            if !app.accounts.is_empty() {
+                                                app.active_email = Some(app.accounts[0].email.clone());
+                                                app.cli_cache.active_email = Some(app.accounts[0].email.clone());
+                                            } else {
+                                                app.active_email = None;
+                                                app.cli_cache.active_email = None;
+                                            }
+                                            let _ = save_cli_cache(&app.cli_cache);
+                                        }
+                                        
+                                        app.list_state.select(Some(0));
+                                        app.set_status(&format!("✓ Account {} deleted successfully.", email_clone));
+                                    }
+                                    Err(e) => {
+                                        app.set_status(&format!("✗ Delete failed: {}", e));
+                                    }
+                                }
+                            }
+                            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc | KeyCode::Char('q') => {
+                                app.input_mode = InputMode::Normal;
+                                app.set_status("Delete cancelled.");
+                            }
+                            _ => {}
                         }
                         continue;
                     }
@@ -2826,6 +2973,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     false,
                                     Some((String::new(), String::new(), app.db_path.clone())),
                                 );
+                            }
+                        }
+                        KeyCode::Char('d') | KeyCode::Backspace => {
+                            if !app.is_loading {
+                                if let Some(acc) = app.get_selected_account() {
+                                    app.input_mode = InputMode::ConfirmDelete {
+                                        email: acc.email.clone(),
+                                    };
+                                }
                             }
                         }
                         _ => {}
