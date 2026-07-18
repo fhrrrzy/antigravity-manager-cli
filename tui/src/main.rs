@@ -29,6 +29,9 @@ const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 // Cooldown duration: 4 hours
 const COOLDOWN_SECONDS: i64 = 14400;
 
+// Redirect Port for Local Auth listener
+const OAUTH_PORT: u16 = 14210;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Account {
     email: String,
@@ -78,6 +81,9 @@ enum InputMode {
         refresh_token: String,
         active_field: usize, // 0 for Email, 1 for Refresh Token
         error_message: Option<String>,
+    },
+    OAuthLogin {
+        auth_url: String,
     },
 }
 
@@ -426,11 +432,8 @@ fn write_to_system_keyring(_email: &str, access_token: &str, refresh_token: &str
     
     let system = std::env::consts::OS;
     if system == "linux" {
-        // Android is detected as "linux" in std::env::consts::OS.
-        // We will test if 'secret-tool' exists. If not, we skip silently.
         let secret_tool_check = subprocess_exists("secret-tool");
         if !secret_tool_check {
-            // Android Termux runs here. We skip keyring and return true (it falls back to caching/accounts.json).
             return true;
         }
         
@@ -443,7 +446,6 @@ fn write_to_system_keyring(_email: &str, access_token: &str, refresh_token: &str
             .is_ok();
             
         if child_check {
-            // Write payload
             if let Ok(mut c) = std::process::Command::new("secret-tool")
                 .args(["store", "--label=gemini", "service", "gemini", "username", "antigravity"])
                 .stdin(std::process::Stdio::piped())
@@ -474,7 +476,6 @@ fn write_to_system_keyring(_email: &str, access_token: &str, refresh_token: &str
         return output.map(|o| o.status.success()).unwrap_or(false);
     }
     
-    // Fallback/Windows (not implemented in blocking, keep simple)
     true
 }
 
@@ -486,6 +487,36 @@ fn subprocess_exists(cmd: &str) -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+// Browser Launcher Helper
+fn open_browser(url: &str) -> bool {
+    let system = std::env::consts::OS;
+    if system == "linux" {
+        if subprocess_exists("termux-open") {
+            std::process::Command::new("termux-open")
+                .arg(url)
+                .spawn()
+                .is_ok()
+        } else {
+            std::process::Command::new("xdg-open")
+                .arg(url)
+                .spawn()
+                .is_ok()
+        }
+    } else if system == "macos" {
+        std::process::Command::new("open")
+            .arg(url)
+            .spawn()
+            .is_ok()
+    } else if system == "windows" {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", url])
+            .spawn()
+            .is_ok()
+    } else {
+        false
+    }
 }
 
 // Asynchronous network operations
@@ -729,7 +760,6 @@ async fn ensure_valid_token(email: &str, refresh_token: &str, cli_cache: &mut Cl
         }
     }
     
-    // Refresh expired/missing token
     if let Some((new_tok, new_exp)) = async_refresh_token(refresh_token.to_string()).await {
         let (proj_id, tier) = async_fetch_project_and_tier(&new_tok).await;
         cli_cache.tokens.insert(email.to_string(), TokenCache {
@@ -758,7 +788,6 @@ fn add_account_to_db(path: &Path, email: &str, refresh_token: &str) -> Result<Ac
         let name = email.split('@').next().unwrap_or("").to_string();
         
         if let Some(arr) = val.as_array_mut() {
-            // Backup JSON list format
             if arr.iter().any(|x| x.get("email").and_then(|e| e.as_str()) == Some(email)) {
                 return Err("Account email already exists in database.".to_string());
             }
@@ -776,7 +805,6 @@ fn add_account_to_db(path: &Path, email: &str, refresh_token: &str) -> Result<Ac
                 id: None,
             });
         } else if let Some(obj) = val.as_object_mut() {
-            // Tauri accounts.json format
             let accounts_arr = obj.get_mut("accounts").and_then(|a| a.as_array_mut());
             if let Some(arr) = accounts_arr {
                 if arr.iter().any(|x| x.get("email").and_then(|e| e.as_str()) == Some(email)) {
@@ -790,7 +818,6 @@ fn add_account_to_db(path: &Path, email: &str, refresh_token: &str) -> Result<Ac
                     "name": name.clone()
                 }));
                 
-                // Write accounts/{id}.json file
                 let data_dir = path.parent().unwrap();
                 let acc_dir = data_dir.join("accounts");
                 let _ = fs::create_dir_all(&acc_dir);
@@ -806,7 +833,6 @@ fn add_account_to_db(path: &Path, email: &str, refresh_token: &str) -> Result<Ac
                 let acc_content = serde_json::to_string_pretty(&acc_details).map_err(|e| e.to_string())?;
                 fs::write(acc_path, acc_content).map_err(|e| e.to_string())?;
                 
-                // Save updated accounts.json
                 let new_content = serde_json::to_string_pretty(&val).map_err(|e| e.to_string())?;
                 fs::write(path, new_content).map_err(|e| e.to_string())?;
                 
@@ -822,6 +848,127 @@ fn add_account_to_db(path: &Path, email: &str, refresh_token: &str) -> Result<Ac
     }
     
     Err("Unknown/Unsupported database format.".to_string())
+}
+
+// Listen for OAuth Code from Google redirect on local loopback TCP port
+async fn listen_for_oauth_code(port: u16) -> Result<String, String> {
+    use tokio::net::TcpListener;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let addr = format!("127.0.0.1:{}", port);
+    let listener = TcpListener::bind(&addr).await.map_err(|e| e.to_string())?;
+    
+    let timeout_duration = Duration::from_secs(120);
+    let start_time = Instant::now();
+    
+    loop {
+        if start_time.elapsed() > timeout_duration {
+            return Err("OAuth login timed out (120 seconds).".to_string());
+        }
+        
+        if let Ok(Ok((mut stream, _))) = tokio::time::timeout(Duration::from_millis(500), listener.accept()).await {
+            let mut buffer = [0; 2048];
+            if let Ok(n) = stream.read(&mut buffer).await {
+                let request = String::from_utf8_lossy(&buffer[..n]);
+                
+                if let Some(line) = request.lines().next() {
+                    if line.starts_with("GET ") {
+                        let parts: Vec<&str> = line.split_whitespace().collect();
+                        if parts.len() > 1 {
+                            let path = parts[1];
+                            let mut code = None;
+                            if let Some(query_idx) = path.find('?') {
+                                let query = &path[query_idx + 1..];
+                                for pair in query.split('&') {
+                                    let mut kv = pair.split('=');
+                                    if let (Some(k), Some(v)) = (kv.next(), kv.next()) {
+                                        if k == "code" {
+                                            code = Some(v.to_string());
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            if let Some(auth_code) = code {
+                                let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n\
+                                <html>\
+                                <head><style>body { font-family: sans-serif; background: #121214; color: #e1e1e6; text-align: center; padding-top: 50px; }</style></head>\
+                                <body>\
+                                  <h2>Antigravity Manager</h2>\
+                                  <p style=\"color: #4ade80; font-weight: bold;\">✓ Authentication successful!</p>\
+                                  <p>You can now close this browser tab and return to the terminal.</p>\
+                                </body>\
+                                </html>";
+                                let _ = stream.write_all(response.as_bytes()).await;
+                                let _ = stream.flush().await;
+                                return Ok(auth_code);
+                            }
+                        }
+                    }
+                }
+                
+                let response = "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\nBad Request";
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        }
+    }
+}
+
+// Exchange Google OAuth Code for Refresh & Access tokens
+async fn exchange_oauth_code(code: &str, port: u16) -> Result<(String, String, i64), String> {
+    let client = reqwest::Client::new();
+    let params = [
+        ("client_id", CLIENT_ID),
+        ("client_secret", CLIENT_SECRET),
+        ("code", code),
+        ("grant_type", "authorization_code"),
+        ("redirect_uri", &format!("http://localhost:{}", port)),
+    ];
+    
+    let resp = client
+        .post(TOKEN_URL)
+        .header("User-Agent", "vscode/1.X.X (Antigravity/4.3.0)")
+        .form(&params)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+        
+    if resp.status().is_success() {
+        #[derive(Deserialize)]
+        struct TokenResponse {
+            access_token: String,
+            refresh_token: String,
+            expires_in: i64,
+        }
+        let data = resp.json::<TokenResponse>().await.map_err(|e| e.to_string())?;
+        let expiry = chrono::Utc::now().timestamp() + data.expires_in;
+        Ok((data.access_token, data.refresh_token, expiry))
+    } else {
+        Err(format!("OAuth exchange returned status {}: {}", resp.status(), resp.text().await.unwrap_or_default()))
+    }
+}
+
+// Query Userinfo endpoint to get email address
+async fn fetch_user_email(access_token: &str) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .get("https://www.googleapis.com/oauth2/v2/userinfo")
+        .header("Authorization", format!("Bearer {}", access_token))
+        .header("User-Agent", "vscode/1.X.X (Antigravity/4.3.0)")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+        
+    if resp.status().is_success() {
+        #[derive(Deserialize)]
+        struct UserInfo {
+            email: String,
+        }
+        let data = resp.json::<UserInfo>().await.map_err(|e| e.to_string())?;
+        Ok(data.email)
+    } else {
+        Err(format!("Google UserInfo returned status {}: {}", resp.status(), resp.text().await.unwrap_or_default()))
+    }
 }
 
 // Background network task runner (for TUI)
@@ -840,20 +987,67 @@ fn spawn_network_task(
         let now = chrono::Utc::now().timestamp();
         
         match action {
+            "oauth_login" => {
+                let db_path = new_acc_details.unwrap().2;
+                let _ = event_tx.send(AppEvent::Progress("Starting local OAuth listener on loopback...".to_string()));
+                
+                match listen_for_oauth_code(OAUTH_PORT).await {
+                    Ok(auth_code) => {
+                        let _ = event_tx.send(AppEvent::Progress("Exchanging code for tokens...".to_string()));
+                        match exchange_oauth_code(&auth_code, OAUTH_PORT).await {
+                            Ok((access_token, refresh_token, expiry)) => {
+                                let _ = event_tx.send(AppEvent::Progress("Fetching user email profile...".to_string()));
+                                match fetch_user_email(&access_token).await {
+                                    Ok(email) => {
+                                        let _ = event_tx.send(AppEvent::Progress(format!("Verifying project subscription for {}...", email)));
+                                        let (proj_id, tier) = async_fetch_project_and_tier(&access_token).await;
+                                        
+                                        let _ = event_tx.send(AppEvent::Progress("Adding account to database...".to_string()));
+                                        match add_account_to_db(&db_path, &email, &refresh_token) {
+                                            Ok(new_acc) => {
+                                                cli_cache.tokens.insert(email.clone(), TokenCache {
+                                                    access_token,
+                                                    expiry_timestamp: expiry,
+                                                    project_id: proj_id,
+                                                    subscription_tier: tier,
+                                                });
+                                                save_cli_cache(&cli_cache);
+                                                
+                                                let _ = event_tx.send(AppEvent::NetworkSuccess(NetworkResult::AddAccountComplete {
+                                                    new_account: new_acc,
+                                                }));
+                                            }
+                                            Err(e) => {
+                                                let _ = event_tx.send(AppEvent::NetworkError(format!("Add account failed: {}", e)));
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        let _ = event_tx.send(AppEvent::NetworkError(format!("Email fetch failed: {}", e)));
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                let _ = event_tx.send(AppEvent::NetworkError(format!("OAuth exchange failed: {}", e)));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let _ = event_tx.send(AppEvent::NetworkError(format!("OAuth listener error: {}", e)));
+                    }
+                }
+            }
             "add_account" => {
                 let (email, rt, db_path) = new_acc_details.unwrap();
                 let _ = event_tx.send(AppEvent::Progress(format!("Validating refresh token for {}...", email)));
                 
-                // 1. Validate refresh token by requesting a fresh access token
                 if let Some((access_token, expiry)) = async_refresh_token(rt.clone()).await {
                     let _ = event_tx.send(AppEvent::Progress(format!("Verifying project settings for {}...", email)));
                     let (proj_id, tier) = async_fetch_project_and_tier(&access_token).await;
                     
-                    // 2. Add to local db file
                     let _ = event_tx.send(AppEvent::Progress("Writing credentials to database...".to_string()));
                     match add_account_to_db(&db_path, &email, &rt) {
                         Ok(new_acc) => {
-                            // 3. Cache token info
                             cli_cache.tokens.insert(email.clone(), TokenCache {
                                 access_token,
                                 expiry_timestamp: expiry,
@@ -1178,7 +1372,6 @@ async fn cli_switch(accounts: &[Account], identifier: &str) {
         cache.active_email = Some(email.clone());
         save_cli_cache(&cache);
         
-        // Sync to official accounts.json if it exists
         let data_dir = get_data_dir();
         let index_path = data_dir.join("accounts.json");
         if index_path.exists() {
@@ -1510,10 +1703,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (accounts, db_path, db_desc) = load_accounts_list();
     let active_email = get_active_email(&accounts);
     
-    // Parse command line arguments
     let args: Vec<String> = std::env::args().collect();
     if args.len() > 1 {
-        // Run in CLI mode
         let subcommand = &args[1];
         match subcommand.as_str() {
             "list" => {
@@ -1587,21 +1778,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Default: Run interactive TUI Mode
+    // Default: Run TUI mode
     let cache = load_cli_cache();
     let history = load_warmup_history();
     
-    // Setup Terminal GUI
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     
-    // Setup Async channels for background network tasks
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
     
-    // Spawn keyboard event listener thread
     let tx = event_tx.clone();
     tokio::spawn(async move {
         loop {
@@ -1614,10 +1802,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Initialize TUI App state
     let mut app = App::new(accounts, db_path, db_desc, active_email, cache, history);
 
-    // Fetch initial quota in the background for active account if cached quota is empty
     if let Some(ref email) = app.active_email {
         if !app.cli_cache.quotas.contains_key(email) && !app.accounts.is_empty() {
             if let Some(acc) = app.accounts.iter().find(|a| a.email == *email).cloned() {
@@ -1629,7 +1815,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     loop {
-        // Render TUI
         terminal.draw(|f| {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
@@ -1641,7 +1826,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ])
                 .split(f.size());
 
-            // 1. Header
             let active_str = app.active_email.as_deref().unwrap_or("None");
             let title = Paragraph::new(format!(
                 " Antigravity Manager TUI | Source: {} | Active Account: {}",
@@ -1651,7 +1835,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .style(Style::default().add_modifier(Modifier::BOLD));
             f.render_widget(title, chunks[0]);
 
-            // Split middle content into 2 panels
             let content_chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([
@@ -1660,7 +1843,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ])
                 .split(chunks[1]);
 
-            // Left panel: Account list
             let items: Vec<ListItem> = app.accounts
                 .iter()
                 .map(|acc| {
@@ -1690,7 +1872,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .highlight_style(Style::default().bg(Color::Rgb(50, 50, 70)).add_modifier(Modifier::BOLD));
             f.render_stateful_widget(account_list, content_chunks[0], &mut app.list_state);
 
-            // Right panel: Details and Quotas
             if let Some(selected_acc) = app.get_selected_account() {
                 let email = &selected_acc.email;
                 let token_cache = app.cli_cache.tokens.get(email);
@@ -1699,7 +1880,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let project_id = token_cache.and_then(|t| t.project_id.as_deref()).unwrap_or("N/A");
                 let tier = quota_cache.and_then(|q| q.subscription_tier.as_deref()).unwrap_or(token_cache.and_then(|t| t.subscription_tier.as_deref()).unwrap_or("N/A"));
 
-                // We construct the vertical layouts inside the Right Panel
                 let details_chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
@@ -1708,7 +1888,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ])
                     .split(content_chunks[1]);
 
-                // Render account header info + Prominent color banner
                 let is_highlight_active = app.active_email.as_ref() == Some(email);
                 let status_span = if is_highlight_active {
                     Span::styled(" ★ ACTIVE SESSION ", Style::default().bg(Color::Rgb(50, 150, 50)).fg(Color::White).add_modifier(Modifier::BOLD))
@@ -1727,7 +1906,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .block(Block::default().borders(Borders::ALL).title(" Account Profile ").style(Style::default().fg(Color::Yellow)));
                 f.render_widget(details_header, details_chunks[0]);
 
-                // Render model lists or loading overlay
                 if app.is_loading {
                     let loading_msg = Paragraph::new(
                         "\n\n\n\n       ⏳  PROCESSING TRANSACTION...\n\n       Contacting Google Companion API and updating active session credentials.\n       Please wait, the interface will automatically refresh."
@@ -1741,7 +1919,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if q.models.is_empty() {
                         quota_items.push(ListItem::new("No model quota details cached. Press [r] to refresh quotas."));
                     } else {
-                        // Sort models to make it pretty: Gemini first, then Claude, then Others
                         let mut sorted_models = q.models.clone();
                         sorted_models.sort_by(|a, b| {
                             let a_is_claude = a.name.contains("claude");
@@ -1758,7 +1935,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let display = m.display_name.as_deref().unwrap_or(name);
                             let pct = m.percentage;
                             
-                            // Determine Color Hue Shift (Red -> Orange -> Green)
                             let bar_color = if pct >= 80 {
                                 Color::Rgb(50, 200, 50)  // Green
                             } else if pct >= 30 {
@@ -1767,7 +1943,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 Color::Rgb(220, 50, 50)  // Red
                             };
 
-                            // Draw a progress bar: 15 ticks wide
                             let bar_width = 15;
                             let filled = ((pct as f64 / 100.0) * bar_width as f64).round() as usize;
                             let empty = bar_width - filled;
@@ -1778,7 +1953,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 pct
                             );
 
-                            // Check cooldown status
                             let history_key = format!("{}:{}:100", email, name);
                             let mut cooldown_str = String::new();
                             if let Some(&last_ts) = app.warmup_history.get(&history_key) {
@@ -1813,43 +1987,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 f.render_widget(fallback, content_chunks[1]);
             }
 
-            // 3. Status Logs
             let loader_prefix = if app.is_loading { "⏳ " } else { "" };
             let status_block = Paragraph::new(format!("{}{}", loader_prefix, app.status_message))
                 .block(Block::default().borders(Borders::ALL).title(" Logger Console ").style(Style::default().fg(Color::Green)))
                 .wrap(Wrap { trim: true });
             f.render_widget(status_block, chunks[2]);
 
-            // 4. Footer keyboard shortcuts
-            let footer = Paragraph::new(" [Enter] Switch Active  |  [r] Refresh Quota  |  [w] Warm Up  |  [W] Warm All  |  [a] Add Account  |  [q] Quit TUI")
+            let footer = Paragraph::new(" [Enter] Switch Active | [r] Refresh Quota | [w] Warm Up | [W] Warm All | [a] Add Custom | [l] OAuth Login | [q] Quit")
                 .style(Style::default().fg(Color::DarkGray));
             f.render_widget(footer, chunks[3]);
 
-            // Render Add Account Modal Overlay
+            // Render Add Account popup Modal
             if let InputMode::AddAccount { email, refresh_token, active_field, error_message } = &app.input_mode {
                 let block = Block::default()
-                    .title(" Add New Account ")
+                    .title(" Add Custom Account ")
                     .borders(Borders::ALL)
                     .style(Style::default().bg(Color::Rgb(20, 20, 30)).fg(Color::Cyan));
                 
                 let area = centered_rect(65, 45, f.size());
-                f.render_widget(Clear, area); // Clean background overlay
+                f.render_widget(Clear, area);
                 
-                // Form layout splits
                 let modal_chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
-                        Constraint::Length(3), // Email Field
-                        Constraint::Length(3), // Refresh Token Field
-                        Constraint::Length(3), // Error message if any
-                        Constraint::Min(1),    // Guidelines/Keyboard info
+                        Constraint::Length(3),
+                        Constraint::Length(3),
+                        Constraint::Length(3),
+                        Constraint::Min(1),
                     ])
                     .margin(2)
                     .split(area);
                 
                 f.render_widget(block, area);
 
-                // Email field borders & highlight
                 let email_block = Block::default()
                     .title(" 1. Email Address ")
                     .borders(Borders::ALL)
@@ -1857,7 +2027,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let email_para = Paragraph::new(email.as_str()).block(email_block);
                 f.render_widget(email_para, modal_chunks[0]);
 
-                // Refresh token borders & highlight
                 let token_block = Block::default()
                     .title(" 2. OAuth Refresh Token ")
                     .borders(Borders::ALL)
@@ -1865,27 +2034,79 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let token_para = Paragraph::new(refresh_token.as_str()).block(token_block);
                 f.render_widget(token_para, modal_chunks[1]);
 
-                // Render Error panel if present
                 if let Some(err) = error_message {
                     let err_para = Paragraph::new(format!("Error: {}", err))
                         .style(Style::default().fg(Color::Rgb(220, 50, 50)).add_modifier(Modifier::BOLD));
                     f.render_widget(err_para, modal_chunks[2]);
                 }
 
-                // Guidelines
                 let help_text = Paragraph::new(
                     " [Tab] Switch Fields  |  [Enter] Verify & Add Account  |  [Esc] Cancel Modal\n (The refresh token will be validated with Google prior to saving.)"
                 )
                 .style(Style::default().fg(Color::DarkGray));
                 f.render_widget(help_text, modal_chunks[3]);
             }
+
+            // Render OAuth Login Modal
+            if let InputMode::OAuthLogin { auth_url } = &app.input_mode {
+                let block = Block::default()
+                    .title(" Google OAuth Authentication ")
+                    .borders(Borders::ALL)
+                    .style(Style::default().bg(Color::Rgb(20, 20, 30)).fg(Color::Cyan));
+                
+                let area = centered_rect(75, 55, f.size());
+                f.render_widget(Clear, area);
+                
+                let modal_chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(2), // Intro
+                        Constraint::Length(5), // URL box
+                        Constraint::Length(2), // Status description
+                        Constraint::Min(1),    // Awaiting info
+                    ])
+                    .margin(2)
+                    .split(area);
+                
+                f.render_widget(block, area);
+
+                let intro = Paragraph::new("We have attempted to launch your default web browser for Google authentication.\nIf the browser did not open automatically, please visit the URL below:");
+                f.render_widget(intro, modal_chunks[0]);
+
+                let url_block = Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Copy & Paste URL ")
+                    .style(Style::default().fg(Color::Yellow));
+                let url_para = Paragraph::new(auth_url.as_str())
+                    .block(url_block)
+                    .wrap(Wrap { trim: false });
+                f.render_widget(url_para, modal_chunks[1]);
+
+                let status_desc = Paragraph::new("Status: Awaiting authorization callback from Google loopback listener...")
+                    .style(Style::default().fg(Color::Rgb(50, 180, 240)).add_modifier(Modifier::BOLD));
+                f.render_widget(status_desc, modal_chunks[2]);
+
+                let footer_help = Paragraph::new(" [Esc] Cancel OAuth Login Session\n Listening on local loopback TCP port 14210.")
+                    .style(Style::default().fg(Color::DarkGray));
+                f.render_widget(footer_help, modal_chunks[3]);
+            }
         })?;
 
-        // Handle TUI events
         while let Ok(event) = event_rx.try_recv() {
             match event {
                 AppEvent::Key(key) => {
-                    // Modal interactive input interception
+                    // 1. Intercept OAuthLogin Modal key inputs
+                    if let InputMode::OAuthLogin { .. } = &app.input_mode {
+                        if key.code == KeyCode::Esc {
+                            app.input_mode = InputMode::Normal;
+                            app.set_status("OAuth login session cancelled.");
+                            // Re-enable interactions
+                            app.is_loading = false;
+                        }
+                        continue;
+                    }
+
+                    // 2. Intercept AddAccount Modal key inputs
                     let mut add_account_action = None;
                     if let InputMode::AddAccount { .. } = &app.input_mode {
                         match key.code {
@@ -1963,7 +2184,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
 
-                    // Normal mode key bindings
+                    // 3. Normal key inputs
                     match key.code {
                         KeyCode::Char('q') | KeyCode::Esc => {
                             disable_raw_mode()?;
@@ -2043,7 +2264,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                         KeyCode::Char('W') => {
-                            // Warm up ALL accounts
                             if !app.is_loading {
                                 app.is_loading = true;
                                 app.set_status("Initializing Smart Warm Up cycle for ALL accounts...");
@@ -2089,6 +2309,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 };
                             }
                         }
+                        KeyCode::Char('l') => {
+                            if !app.is_loading {
+                                // Construct Google OAuth Consent login url
+                                let auth_url = format!(
+                                    "https://accounts.google.com/o/oauth2/v2/auth?client_id={}&redirect_uri=http://localhost:{}&response_type=code&scope=email+profile&access_type=offline&prompt=consent",
+                                    CLIENT_ID, OAUTH_PORT
+                                );
+                                
+                                // Launch Browser on background thread
+                                let url_clone = auth_url.clone();
+                                tokio::spawn(async move {
+                                    let _ = open_browser(&url_clone);
+                                });
+                                
+                                // Enable OAuth Loading screen overlay
+                                app.is_loading = true;
+                                app.input_mode = InputMode::OAuthLogin { auth_url };
+                                app.set_status("Starting Google OAuth loopback session on port 14210. Check browser...");
+                                
+                                // Spawn background loopback listener task
+                                spawn_network_task(
+                                    event_tx.clone(),
+                                    None,
+                                    Vec::new(),
+                                    app.cli_cache.clone(),
+                                    app.warmup_history.clone(),
+                                    "oauth_login",
+                                    None,
+                                    false,
+                                    Some((String::new(), String::new(), app.db_path.clone())),
+                                );
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -2101,11 +2354,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         NetworkResult::AddAccountComplete { new_account } => {
                             app.input_mode = InputMode::Normal;
                             
-                            // Reload accounts list dynamically from file
                             let (reload_accs, _, _) = load_accounts_list();
                             app.accounts = reload_accs;
                             
-                            // Set selection to new account
                             if let Some(pos) = app.accounts.iter().position(|a| a.email == new_account.email) {
                                 app.list_state.select(Some(pos));
                             }
@@ -2174,7 +2425,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     app.is_loading = false;
                     app.set_status(&err);
                     
-                    // Keep AddAccount form open if validation failed, updating error message
                     if let InputMode::AddAccount { email, refresh_token, active_field, .. } = &app.input_mode {
                         app.input_mode = InputMode::AddAccount {
                             email: email.clone(),
@@ -2182,6 +2432,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             active_field: *active_field,
                             error_message: Some(err.clone()),
                         };
+                    } else if let InputMode::OAuthLogin { .. } = &app.input_mode {
+                        // Close OAuth Modal on error
+                        app.input_mode = InputMode::Normal;
                     }
                 }
                 AppEvent::Tick => {
