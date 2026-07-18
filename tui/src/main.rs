@@ -268,13 +268,13 @@ fn load_accounts_list() -> (Vec<Account>, String) {
                     let mut accounts = Vec::new();
                     for item in raw_accs {
                         let default_name = item.email.split('@').next().unwrap_or("").to_string();
-                        accounts.append(&mut vec![Account {
+                        accounts.push(Account {
                             name: item.name.unwrap_or(default_name),
                             email: item.email,
                             refresh_token: item.refresh_token,
                             source: format!("backup ({})", path.file_name().unwrap().to_string_lossy()),
                             id: None,
-                        }]);
+                        });
                     }
                     if !accounts.is_empty() {
                         return (accounts, format!("Backup file '{}'", path.file_name().unwrap().to_string_lossy()));
@@ -382,7 +382,7 @@ fn get_active_email(accounts: &[Account]) -> Option<String> {
 }
 
 // System Keyring helpers (Android, Linux, macOS, Windows)
-fn write_to_system_keyring(email: &str, access_token: &str, refresh_token: &str, expiry_timestamp: i64) -> bool {
+fn write_to_system_keyring(_email: &str, access_token: &str, refresh_token: &str, expiry_timestamp: i64) -> bool {
     let expiry_datetime = chrono::DateTime::from_timestamp(expiry_timestamp, 0)
         .unwrap_or_else(|| chrono::Utc::now());
     let expiry_str = expiry_datetime.to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
@@ -408,7 +408,7 @@ fn write_to_system_keyring(email: &str, access_token: &str, refresh_token: &str,
             return true;
         }
         
-        let mut child = std::process::Command::new("secret-tool")
+        let child_check = std::process::Command::new("secret-tool")
             .args(["store", "--label=gemini", "service", "gemini", "username", "antigravity"])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -416,7 +416,7 @@ fn write_to_system_keyring(email: &str, access_token: &str, refresh_token: &str,
             .spawn()
             .is_ok();
             
-        if child {
+        if child_check {
             // Write payload
             if let Ok(mut c) = std::process::Command::new("secret-tool")
                 .args(["store", "--label=gemini", "service", "gemini", "username", "antigravity"])
@@ -695,11 +695,36 @@ async fn async_trigger_warmup(access_token: &str, model_name: &str, project_id: 
     Err(last_err)
 }
 
-// Background network task runner
+// Unified token resolver and cache saver (reusable in CLI & TUI)
+async fn ensure_valid_token(email: &str, refresh_token: &str, cli_cache: &mut CliCache) -> Option<(String, Option<String>)> {
+    let now = chrono::Utc::now().timestamp();
+    if let Some(tc) = cli_cache.tokens.get(email) {
+        if tc.expiry_timestamp > now + 300 {
+            return Some((tc.access_token.clone(), tc.project_id.clone()));
+        }
+    }
+    
+    // Refresh expired/missing token
+    if let Some((new_tok, new_exp)) = async_refresh_token(refresh_token.to_string()).await {
+        let (proj_id, tier) = async_fetch_project_and_tier(&new_tok).await;
+        cli_cache.tokens.insert(email.to_string(), TokenCache {
+            access_token: new_tok.clone(),
+            expiry_timestamp: new_exp,
+            project_id: proj_id.clone(),
+            subscription_tier: tier,
+        });
+        save_cli_cache(cli_cache);
+        Some((new_tok, proj_id))
+    } else {
+        None
+    }
+}
+
+// Background network task runner (for TUI)
 fn spawn_network_task(
     event_tx: mpsc::UnboundedSender<AppEvent>,
     account: Account,
-    cli_cache: CliCache,
+    mut cli_cache: CliCache,
     warmup_history: HashMap<String, i64>,
     action: &'static str,
     target_model: Option<String>,
@@ -708,70 +733,31 @@ fn spawn_network_task(
     tokio::spawn(async move {
         let email = account.email.clone();
         
-        // 1. Get/Refresh Token
-        let mut active_token = None;
-        let mut resolved_proj_id = None;
-        let mut fresh_details = None;
+        let token_info = ensure_valid_token(&email, &account.refresh_token, &mut cli_cache).await;
+        if token_info.is_none() {
+            let _ = event_tx.send(AppEvent::NetworkError(format!("Failed to refresh credentials for {}", email)));
+            return;
+        }
         
-        let token_cached = cli_cache.tokens.get(&email);
+        let (access_token, resolved_proj_id) = token_info.unwrap();
         let now = chrono::Utc::now().timestamp();
         
-        if let Some(tc) = token_cached {
-            if tc.expiry_timestamp > now + 300 {
-                active_token = Some(tc.access_token.clone());
-                resolved_proj_id = tc.project_id.clone();
-            }
-        }
-        
-        if active_token.is_none() {
-            if let Some((new_tok, new_exp)) = async_refresh_token(account.refresh_token.clone()).await {
-                // Fetch project ID and tier
-                let (proj_id, tier) = async_fetch_project_and_tier(&new_tok).await;
-                active_token = Some(new_tok.clone());
-                resolved_proj_id = proj_id.clone();
-                fresh_details = Some(TokenCache {
-                    access_token: new_tok,
-                    expiry_timestamp: new_exp,
-                    project_id: proj_id,
-                    subscription_tier: tier,
-                });
-            } else {
-                let _ = event_tx.send(AppEvent::NetworkError(format!("Failed to refresh credentials for {}", email)));
-                return;
-            }
-        }
-        
-        let access_token = active_token.unwrap();
-        
-        // 2. Perform requested action
         match action {
             "switch" => {
-                let expiry = fresh_details.as_ref().map(|d| d.expiry_timestamp).unwrap_or_else(|| {
-                    cli_cache.tokens.get(&email).map(|d| d.expiry_timestamp).unwrap_or(now + 3600)
-                });
-                
-                // Write to keyring
+                let expiry = cli_cache.tokens.get(&email).map(|d| d.expiry_timestamp).unwrap_or(now + 3600);
                 let keyring_success = write_to_system_keyring(&email, &access_token, &account.refresh_token, expiry);
                 
-                // Also fetch tier/project if fresh
-                let mut updated_quota = None;
-                if let Some(ref fd) = fresh_details {
-                    updated_quota = Some(QuotaData {
-                        subscription_tier: fd.subscription_tier.clone(),
-                        models: Vec::new(),
-                    });
-                }
-                
                 let _ = event_tx.send(AppEvent::NetworkSuccess(NetworkResult::SwitchComplete {
-                    email,
+                    email: email.clone(),
                     keyring_success,
                 }));
                 
-                // If we got fresh details, propagate them so TUI caches them
-                if let Some(fd) = fresh_details {
+                // Propagate project ID & subscription tier back to TUI
+                let details = cli_cache.tokens.get(&email).cloned();
+                if let Some(fd) = details {
                     let _ = event_tx.send(AppEvent::NetworkSuccess(NetworkResult::QuotaRefreshed {
                         email: account.email,
-                        quota: updated_quota.unwrap_or(QuotaData { subscription_tier: fd.subscription_tier, models: Vec::new() }),
+                        quota: QuotaData { subscription_tier: fd.subscription_tier, models: Vec::new() },
                         project_id: fd.project_id,
                     }));
                 }
@@ -779,9 +765,7 @@ fn spawn_network_task(
             "quota" => {
                 match async_fetch_quota(&access_token, resolved_proj_id.as_deref()).await {
                     Ok(models) => {
-                        let tier = fresh_details.as_ref().and_then(|d| d.subscription_tier.clone()).or_else(|| {
-                            cli_cache.tokens.get(&email).and_then(|d| d.subscription_tier.clone())
-                        });
+                        let tier = cli_cache.tokens.get(&email).and_then(|d| d.subscription_tier.clone());
                         let q = QuotaData {
                             subscription_tier: tier,
                             models,
@@ -798,10 +782,8 @@ fn spawn_network_task(
                 }
             }
             "warmup" => {
-                // Make sure we have quota models
                 let mut models = cli_cache.quotas.get(&email).map(|q| q.models.clone()).unwrap_or_default();
                 
-                // If no models cached or force is set, we fetch quota first
                 if models.is_empty() || force {
                     if let Ok(m) = async_fetch_quota(&access_token, resolved_proj_id.as_deref()).await {
                         models = m;
@@ -809,17 +791,15 @@ fn spawn_network_task(
                 }
                 
                 if models.is_empty() && target_model.is_none() {
-                    let _ = event_tx.send(AppEvent::NetworkError("No models available to warm up. Please refresh quota first.".to_string()));
+                    let _ = event_tx.send(AppEvent::NetworkError("No models available. Refresh quota first.".to_string()));
                     return;
                 }
                 
-                // Determine models to warm up
                 let mut to_warm = Vec::new();
                 if let Some(ref target) = target_model {
                     if let Some(m) = models.iter().find(|x| x.name == *target || x.display_name.as_deref() == Some(target)) {
                         to_warm.push(m.clone());
                     } else {
-                        // Custom model override
                         to_warm.push(ModelQuota {
                             name: target.clone(),
                             percentage: 100,
@@ -866,9 +846,7 @@ fn spawn_network_task(
                             let elapsed = now - last_ts;
                             if elapsed < COOLDOWN_SECONDS {
                                 let rem = COOLDOWN_SECONDS - elapsed;
-                                let h = rem / 3600;
-                                let min = (rem % 3600) / 60;
-                                logs.push(format!("Skipped {}: Cooling down ({}h {}m left).", display, h, min));
+                                logs.push(format!("Skipped {}: Cooling down ({}h {}m left).", display, rem / 3600, (rem % 3600) / 60));
                                 skipped_count += 1;
                                 continue;
                             }
@@ -897,9 +875,7 @@ fn spawn_network_task(
                     logs,
                 }));
                 
-                // Send success recordings to main loop to write into history
                 for m_name in record_success_models {
-                    // We record success inside the TUI state, which writes to history JSON
                     let mut history = load_warmup_history();
                     let key = format!("{}:{}:100", email, m_name);
                     history.insert(key, chrono::Utc::now().timestamp());
@@ -911,22 +887,371 @@ fn spawn_network_task(
     });
 }
 
+// ---------------------------------------------------------
+// CLI COMMANDS IMPLEMENTATION (Rust-native CLI mode)
+// ---------------------------------------------------------
+
+fn find_account_by_identifier<'a>(accounts: &'a [Account], id: &str) -> Option<&'a Account> {
+    if let Ok(idx) = id.parse::<usize>() {
+        if idx > 0 && idx <= accounts.len() {
+            return Some(&accounts[idx - 1]);
+        }
+    }
+    accounts.iter().find(|a| a.email.to_lowercase() == id.to_lowercase())
+}
+
+fn cli_list(accounts: &[Account], active_email: Option<&str>, source: &str) {
+    if accounts.is_empty() {
+        println!("No accounts configured. Check backup file.");
+        return;
+    }
+    println!("\nAccounts List (Source: {}):", source);
+    println!("============================================================");
+    println!("{:<3} | {:<6} | {:<32} | {:<20}", "#", "Active", "Email", "Name");
+    println!("------------------------------------------------------------");
+    for (idx, acc) in accounts.iter().enumerate() {
+        let is_active = active_email == Some(&acc.email);
+        let active_mark = if is_active { "★" } else { " " };
+        println!("{:<3} | {:<6} | {:<32} | {:<20}", idx + 1, active_mark, acc.email, acc.name);
+    }
+    println!("\n★ = Current active account used by Antigravity.");
+}
+
+async fn cli_switch(accounts: &[Account], identifier: &str) {
+    let acc = match find_account_by_identifier(accounts, identifier) {
+        Some(a) => a,
+        None => {
+            eprintln!("Error: Account matching '{}' not found.", identifier);
+            std::process::exit(1);
+        }
+    };
+    
+    let mut cache = load_cli_cache();
+    let email = &acc.email;
+    println!("Switching active account to: {}...", email);
+    
+    if let Some((access_token, project_id)) = ensure_valid_token(email, &acc.refresh_token, &mut cache).await {
+        let expiry = cache.tokens.get(email).map(|t| t.expiry_timestamp).unwrap_or(0);
+        let keyring_success = write_to_system_keyring(email, &access_token, &acc.refresh_token, expiry);
+        
+        cache.active_email = Some(email.clone());
+        save_cli_cache(&cache);
+        
+        // Sync to official accounts.json if it exists
+        let data_dir = get_data_dir();
+        let index_path = data_dir.join("accounts.json");
+        if index_path.exists() {
+            if let Some(ref acc_id) = acc.id {
+                if let Ok(content) = fs::read_to_string(&index_path) {
+                    let cleaned = content.replace("\u{feff}", "").replace('\x00', "");
+                    if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&cleaned) {
+                        if let Some(obj) = val.as_object_mut() {
+                            obj.insert("current_account_id".to_string(), json!(acc_id));
+                            if let Ok(new_content) = serde_json::to_string_pretty(&val) {
+                                let _ = fs::write(&index_path, new_content);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        println!("✓ Active account changed to {} ({}).", email, acc.name);
+        if keyring_success {
+            println!("✓ Credentials successfully written to system keyring.");
+        } else {
+            println!("⚠️  Keyring write skipped/unsupported (fallback active).");
+        }
+    } else {
+        eprintln!("Error: Failed to refresh credentials for {}.", email);
+        std::process::exit(1);
+    }
+}
+
+async fn cli_quota(accounts: &[Account], active_email: Option<&str>, identifier: Option<&str>, refresh: bool) {
+    let target_email = match identifier {
+        Some(id) => match find_account_by_identifier(accounts, id) {
+            Some(a) => &a.email,
+            None => {
+                eprintln!("Error: Account matching '{}' not found.", id);
+                std::process::exit(1);
+            }
+        },
+        None => match active_email {
+            Some(email) => email,
+            None => {
+                eprintln!("Error: No active account configured. Specify an index or email.");
+                std::process::exit(1);
+            }
+        }
+    };
+    
+    let acc = accounts.iter().find(|a| a.email == *target_email).unwrap();
+    let mut cache = load_cli_cache();
+    
+    let (access_token, mut project_id) = match ensure_valid_token(target_email, &acc.refresh_token, &mut cache).await {
+        Some(t) => t,
+        None => {
+            eprintln!("Error: Failed to validate token for {}.", target_email);
+            std::process::exit(1);
+        }
+    };
+    
+    if refresh {
+        println!("Fetching latest quota from Google APIs for {}...", target_email);
+        let (api_proj, tier) = async_fetch_project_and_tier(&access_token).await;
+        if api_proj.is_some() {
+            project_id = api_proj.clone();
+            if let Some(tc) = cache.tokens.get_mut(target_email) {
+                tc.project_id = api_proj;
+                tc.subscription_tier = tier.clone();
+            }
+        }
+        
+        match async_fetch_quota(&access_token, project_id.as_deref()).await {
+            Ok(models) => {
+                cache.quotas.insert(target_email.clone(), QuotaData {
+                    subscription_tier: tier.or_else(|| cache.tokens.get(target_email).and_then(|t| t.subscription_tier.clone())),
+                    models,
+                });
+                save_cli_cache(&cache);
+                println!("✓ Quota cache updated.");
+            }
+            Err(e) => {
+                eprintln!("Error fetching quota: {}", e);
+                std::process::exit(1);
+            }
+        }
+    }
+    
+    let quota_data = cache.quotas.get(target_email);
+    if quota_data.is_none() || quota_data.unwrap().models.is_empty() {
+        println!("No cached quotas for {}. Run with '--refresh' to fetch.", target_email);
+        return;
+    }
+    
+    let q = quota_data.unwrap();
+    println!("\nQuota for {}:", target_email);
+    println!("Subscription Tier: {}", q.subscription_tier.as_deref().unwrap_or("N/A"));
+    println!("Project ID: {}", project_id.as_deref().unwrap_or("N/A"));
+    println!("========================================================================");
+    println!("{:<32} | {:<25} | {:<12} | {:<20}", "Model Display Name", "Model ID", "Remaining %", "Reset Time (UTC)");
+    println!("------------------------------------------------------------------------");
+    for m in &q.models {
+        let display = m.display_name.as_deref().unwrap_or(&m.name);
+        println!("{:<32} | {:<25} | {:<12}% | {:<20}", display, m.name, m.percentage, m.reset_time);
+    }
+}
+
+async fn cli_warmup(accounts: &[Account], active_email: Option<&str>, identifier: Option<&str>, model_name: Option<&str>, force: bool) {
+    let target_email = match identifier {
+        Some(id) => match find_account_by_identifier(accounts, id) {
+            Some(a) => &a.email,
+            None => {
+                eprintln!("Error: Account matching '{}' not found.", id);
+                std::process::exit(1);
+            }
+        },
+        None => match active_email {
+            Some(email) => email,
+            None => {
+                eprintln!("Error: No active account configured. Specify an index or email.");
+                std::process::exit(1);
+            }
+        }
+    };
+    
+    let acc = accounts.iter().find(|a| a.email == *target_email).unwrap();
+    let mut cache = load_cli_cache();
+    let mut history = load_warmup_history();
+    let now = chrono::Utc::now().timestamp();
+    
+    let (access_token, mut project_id) = match ensure_valid_token(target_email, &acc.refresh_token, &mut cache).await {
+        Some(t) => t,
+        None => {
+            eprintln!("Error: Failed to validate token for {}.", target_email);
+            std::process::exit(1);
+        }
+    };
+    
+    let mut models = cache.quotas.get(target_email).map(|q| q.models.clone()).unwrap_or_default();
+    if models.is_empty() || force {
+        println!("Refreshing quota list...");
+        let (api_proj, tier) = async_fetch_project_and_tier(&access_token).await;
+        if api_proj.is_some() {
+            project_id = api_proj.clone();
+            if let Some(tc) = cache.tokens.get_mut(target_email) {
+                tc.project_id = api_proj;
+                tc.subscription_tier = tier;
+            }
+        }
+        if let Ok(m) = async_fetch_quota(&access_token, project_id.as_deref()).await {
+            models = m;
+        }
+    }
+    
+    let mut to_warm = Vec::new();
+    if let Some(ref m_name) = model_name {
+        if let Some(m) = models.iter().find(|x| x.name == *m_name || x.display_name.as_deref() == Some(m_name)) {
+            to_warm.push(m.clone());
+        } else {
+            to_warm.push(ModelQuota {
+                name: m_name.clone(),
+                percentage: 100,
+                display_name: Some(m_name.clone()),
+                reset_time: String::new(),
+            });
+        }
+    } else {
+        for m in &models {
+            if m.percentage >= 100 {
+                to_warm.push(m.clone());
+            }
+        }
+    }
+    
+    if to_warm.is_empty() {
+        println!("All models have remaining quotas. No warmup needed.");
+        return;
+    }
+    
+    let mut count = 0;
+    for m in to_warm {
+        let display = m.display_name.as_deref().unwrap_or(&m.name);
+        
+        if m.name.contains("2.5-") || m.name.contains("2-5-") {
+            println!("Skipping {}: 2.5 series not supported.", display);
+            continue;
+        }
+        
+        if !force {
+            let key = format!("{}:{}:100", target_email, m.name);
+            if let Some(&last) = history.get(&key) {
+                let elapsed = now - last;
+                if elapsed < COOLDOWN_SECONDS {
+                    let rem = COOLDOWN_SECONDS - elapsed;
+                    println!("Skipping {}: Cooling down ({}h {}m remaining).", display, rem / 3600, (rem % 3600) / 60);
+                    continue;
+                }
+            }
+        }
+        
+        println!("Warming up model {}...", display);
+        match async_trigger_warmup(&access_token, &m.name, project_id.as_deref(), target_email).await {
+            Ok(_) => {
+                println!("✓ Successfully warmed up {}!", display);
+                let key = format!("{}:{}:100", target_email, m.name);
+                history.insert(key, chrono::Utc::now().timestamp());
+                save_warmup_history(&history);
+                count += 1;
+            }
+            Err(e) => {
+                println!("✗ Warmup failed for {}: {}", display, e);
+            }
+        }
+        
+        tokio::time::sleep(Duration::from_millis(800)).await;
+    }
+    println!("Warmup cycle finished. Triggered {} warmup(s).", count);
+}
+
+// ---------------------------------------------------------
+// MAIN RUNTIME ORCHESTRATOR
+// ---------------------------------------------------------
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Resolve accounts database
     let (accounts, db_desc) = load_accounts_list();
-    let cache = load_cli_cache();
-    let history = load_warmup_history();
     let active_email = get_active_email(&accounts);
     
-    // 2. Setup Terminal GUI
+    // Parse command line arguments
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 {
+        // Run in CLI mode
+        let subcommand = &args[1];
+        match subcommand.as_str() {
+            "list" => {
+                cli_list(&accounts, active_email.as_deref(), &db_desc);
+            }
+            "switch" => {
+                if args.len() < 3 {
+                    eprintln!("Usage: agm-tui switch <index/email>");
+                    std::process::exit(1);
+                }
+                cli_switch(&accounts, &args[2]).await;
+            }
+            "quota" => {
+                let mut identifier = None;
+                let mut refresh = false;
+                for arg in args.iter().skip(2) {
+                    if arg == "--refresh" {
+                        refresh = true;
+                    } else if !arg.starts_with('-') {
+                        identifier = Some(arg.as_str());
+                    }
+                }
+                cli_quota(&accounts, active_email.as_deref(), identifier, refresh).await;
+            }
+            "warmup" => {
+                let mut identifier = None;
+                let mut model = None;
+                let mut force = false;
+                let mut skip_next = false;
+                
+                for (i, arg) in args.iter().enumerate().skip(2) {
+                    if skip_next {
+                        skip_next = false;
+                        continue;
+                    }
+                    if arg == "--force" {
+                        force = true;
+                    } else if arg == "--model" {
+                        if i + 1 < args.len() {
+                            model = Some(args[i + 1].clone());
+                            skip_next = true;
+                        } else {
+                            eprintln!("Error: --model flag requires a value.");
+                            std::process::exit(1);
+                        }
+                    } else if !arg.starts_with('-') {
+                        identifier = Some(arg.as_str());
+                    }
+                }
+                cli_warmup(&accounts, active_email.as_deref(), identifier, model.as_deref(), force).await;
+            }
+            "help" | "-h" | "--help" => {
+                println!("Antigravity Manager (Rust Unified Edition)\n");
+                println!("Usage:");
+                println!("  agm-tui                   Launch interactive terminal user interface (TUI)");
+                println!("  agm-tui list              List configured accounts");
+                println!("  agm-tui switch <id>       Switch the active account");
+                println!("  agm-tui quota [id] [-r]   Display quotas (use --refresh to update)");
+                println!("  agm-tui warmup [id] [flg] Run warmup cycles (use --model <name> or --force)");
+                println!("\nExamples:");
+                println!("  agm-tui switch 3");
+                println!("  agm-tui quota --refresh");
+                println!("  agm-tui warmup --force");
+            }
+            _ => {
+                eprintln!("Unknown command '{}'. Type 'agm-tui --help' for help.", subcommand);
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
+    // Default: Run interactive TUI Mode
+    let cache = load_cli_cache();
+    let history = load_warmup_history();
+    
+    // Setup Terminal GUI
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     
-    // 3. Setup Async channels
+    // Setup Async channels for background network tasks
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
     
     // Spawn keyboard event listener thread
@@ -942,7 +1267,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Initialize App state
+    // Initialize TUI App state
     let mut app = App::new(accounts, db_desc, active_email, cache, history);
 
     // Fetch initial quota in the background for active account if cached quota is empty
@@ -1144,12 +1469,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             f.render_widget(footer, chunks[3]);
         })?;
 
-        // 4. Handle events
+        // Handle TUI events
         while let Ok(event) = event_rx.try_recv() {
             match event {
                 AppEvent::Key(key) => match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => {
-                        // Exit alternate screen
                         disable_raw_mode()?;
                         execute!(
                             terminal.backend_mut(),
@@ -1254,32 +1578,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                         NetworkResult::QuotaRefreshed { email, quota, project_id } => {
-                            // Update tokens and quotas caches
                             if let Some(pid) = project_id {
                                 if let Some(tc) = app.cli_cache.tokens.get_mut(&email) {
                                     tc.project_id = Some(pid);
                                 }
                             }
-                            app.cli_cache.quotas.insert(email.clone(), quota);
+                            // Only update models list if it's not empty, preserving profile tier
+                            if !quota.models.is_empty() {
+                                app.cli_cache.quotas.insert(email.clone(), quota);
+                            } else if let Some(tc) = app.cli_cache.tokens.get(&email) {
+                                if let Some(q_entry) = app.cli_cache.quotas.get_mut(&email) {
+                                    q_entry.subscription_tier = tc.subscription_tier.clone();
+                                }
+                            }
                             save_cli_cache(&app.cli_cache);
                             app.set_status(&format!("Quota statistics refreshed for {}.", email));
                         }
                         NetworkResult::WarmupComplete { email, warmup_count, skipped_count, logs } => {
-                            app.warmup_history = load_warmup_history(); // reload history
-                            
-                            // Print summary
+                            app.warmup_history = load_warmup_history();
                             let summary = format!(
                                 "Warmup completed for {}: triggered {}, skipped {}.",
                                 email, warmup_count, skipped_count
                             );
                             app.set_status(&summary);
                             
-                            // Log the detailed lines
                             for log in logs {
                                 app.set_status(&log);
                             }
                             
-                            // Re-trigger quota update after warmup to show fresh limits
                             if warmup_count > 0 {
                                 if let Some(acc) = app.accounts.iter().find(|a| a.email == email).cloned() {
                                     app.is_loading = true;
