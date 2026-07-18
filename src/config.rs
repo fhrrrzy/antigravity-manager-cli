@@ -120,16 +120,18 @@ pub fn load_accounts_list() -> (Vec<Account>, PathBuf, String) {
                     let mut accounts = Vec::new();
                     for item in raw_accs {
                         let default_name = item.email.split('@').next().unwrap_or("").to_string();
+                        let file_name = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| "backup".to_string());
                         accounts.push(Account {
                             name: item.name.unwrap_or(default_name),
                             email: item.email,
                             refresh_token: item.refresh_token,
-                            source: format!("backup ({})", path.file_name().unwrap().to_string_lossy()),
+                            source: format!("backup ({})", file_name),
                             id: None,
                         });
                     }
                     if !accounts.is_empty() {
-                        return (accounts, path.clone(), format!("Backup file '{}'", path.file_name().unwrap().to_string_lossy()));
+                        let file_name = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| "backup".to_string());
+                        return (accounts, path.clone(), format!("Backup file '{}'", file_name));
                     }
                 }
             }
@@ -251,11 +253,12 @@ pub fn add_account_to_db(path: &Path, email: &str, refresh_token: &str) -> Resul
             }));
             let new_content = serde_json::to_string_pretty(&val).map_err(|e| e.to_string())?;
             fs::write(path, new_content).map_err(|e| e.to_string())?;
+            let file_name = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| "backup".to_string());
             return Ok(Account {
                 email: email.to_string(),
                 refresh_token: refresh_token.to_string(),
                 name: name.clone(),
-                source: format!("backup ({})", path.file_name().unwrap().to_string_lossy()),
+                source: format!("backup ({})", file_name),
                 id: None,
             });
         } else if let Some(obj) = val.as_object_mut() {
@@ -272,7 +275,9 @@ pub fn add_account_to_db(path: &Path, email: &str, refresh_token: &str) -> Resul
                     "name": name.clone()
                 }));
                 
-                let data_dir = path.parent().unwrap();
+                let Some(data_dir) = path.parent() else {
+                    return Err("Invalid database path (no parent directory).".to_string());
+                };
                 let acc_dir = data_dir.join("accounts");
                 let _ = fs::create_dir_all(&acc_dir);
                 let acc_path = acc_dir.join(format!("{}.json", new_id));
@@ -341,7 +346,9 @@ pub fn delete_account_from_db(path: &Path, email: &str) -> Result<(), String> {
             }
             
             if let Some(ref d_id) = deleted_id {
-                let data_dir = path.parent().unwrap();
+                let Some(data_dir) = path.parent() else {
+                    return Err("Invalid database path (no parent directory).".to_string());
+                };
                 let acc_file = data_dir.join("accounts").join(format!("{}.json", d_id));
                 if acc_file.exists() {
                     let _ = fs::remove_file(acc_file);
@@ -351,7 +358,7 @@ pub fn delete_account_from_db(path: &Path, email: &str) -> Result<(), String> {
                     let accounts_arr = obj.get("accounts").and_then(|a| a.as_array());
                     if let Some(arr) = accounts_arr {
                         if !arr.is_empty() {
-                            let first_id = arr[0].get("id").unwrap().clone();
+                            let first_id = arr[0].get("id").cloned().unwrap_or_else(|| json!(""));
                             obj.insert("current_account_id".to_string(), first_id);
                         } else {
                             obj.remove("current_account_id");

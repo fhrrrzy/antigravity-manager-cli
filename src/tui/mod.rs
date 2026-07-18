@@ -384,7 +384,9 @@ pub fn spawn_network_task(
         let now = chrono::Utc::now().timestamp();
         match action {
             "add_account" => {
-                let (email, refresh_token, db_path) = custom_submit.unwrap();
+                let Some((email, refresh_token, db_path)) = custom_submit else {
+                    return;
+                };
                 match ensure_valid_token(&email, &refresh_token, &mut cli_cache).await {
                     Some((access_token, mut project_id)) => {
                         let (api_proj, tier) = async_fetch_project_and_tier(&access_token).await;
@@ -427,7 +429,9 @@ pub fn spawn_network_task(
                 }
             }
             "oauth_login" => {
-                let (_, _, db_path) = custom_submit.unwrap();
+                let Some((_, _, db_path)) = custom_submit else {
+                    return;
+                };
                 let port = 14210;
                 match listen_for_oauth_code(port).await {
                     Ok(code) => {
@@ -481,7 +485,9 @@ pub fn spawn_network_task(
                 }
             }
             "switch" => {
-                let account = account.unwrap();
+                let Some(account) = account else {
+                    return;
+                };
                 let email = account.email.clone();
                 match ensure_valid_token(&email, &account.refresh_token, &mut cli_cache).await {
                     Some((access_token, _)) => {
@@ -500,7 +506,9 @@ pub fn spawn_network_task(
                 }
             }
             "quota" => {
-                let account = account.unwrap();
+                let Some(account) = account else {
+                    return;
+                };
                 let email = account.email.clone();
                 match ensure_valid_token(&email, &account.refresh_token, &mut cli_cache).await {
                     Some((access_token, mut project_id)) => {
@@ -576,15 +584,15 @@ pub fn spawn_network_task(
                 let _ = event_tx.send(AppEvent::Progress("All accounts quotas reloaded.".to_string()));
             }
             "warmup" => {
-                let account = account.unwrap();
+                let Some(account) = account else {
+                    return;
+                };
                 let email = account.email.clone();
                 
-                let token_info = ensure_valid_token(&email, &account.refresh_token, &mut cli_cache).await;
-                if token_info.is_none() {
+                let Some((access_token, resolved_proj_id)) = ensure_valid_token(&email, &account.refresh_token, &mut cli_cache).await else {
                     let _ = event_tx.send(AppEvent::NetworkError(format!("Failed to refresh credentials for {}", email)));
                     return;
-                }
-                let (access_token, resolved_proj_id) = token_info.unwrap();
+                };
                 
                 let mut models = cli_cache.quotas.get(&email).map(|q| q.models.clone()).unwrap_or_default();
                 if models.is_empty() || force {
@@ -694,13 +702,11 @@ pub fn spawn_network_task(
                     let email = &acc.email;
                     let _ = event_tx.send(AppEvent::Progress(format!("[{}/{}] Refreshing token for {}...", idx + 1, count_accs, email)));
                     
-                    let token_info = ensure_valid_token(email, &acc.refresh_token, &mut cli_cache).await;
-                    if token_info.is_none() {
+                    let Some((access_token, resolved_proj_id)) = ensure_valid_token(email, &acc.refresh_token, &mut cli_cache).await else {
                         total_logs.push(format!("Skipped {}: Token refresh failed.", email));
                         total_skipped += 1;
                         continue;
-                    }
-                    let (access_token, resolved_proj_id) = token_info.unwrap();
+                    };
                     
                     let mut models = cli_cache.quotas.get(email).map(|q| q.models.clone()).unwrap_or_default();
                     if models.is_empty() || force {

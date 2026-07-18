@@ -447,7 +447,10 @@ pub async fn cli_quota(accounts: &[Account], active_email: Option<&str>, identif
         }
     };
     
-    let acc = accounts.iter().find(|a| a.email == *target_email).unwrap();
+    let Some(acc) = accounts.iter().find(|a| a.email == *target_email) else {
+        eprintln!("Error: Active account {} not found in database.", target_email);
+        std::process::exit(1);
+    };
     
     let (access_token, mut project_id) = match ensure_valid_token(target_email, &acc.refresh_token, &mut cache).await {
         Some(t) => t,
@@ -490,8 +493,15 @@ pub async fn cli_quota(accounts: &[Account], active_email: Option<&str>, identif
         }
     }
     
-    let quota_data = cache.quotas.get(target_email);
-    if quota_data.is_none() || quota_data.unwrap().models.is_empty() {
+    let Some(q) = cache.quotas.get(target_email) else {
+        if is_json {
+            println!("[]");
+        } else {
+            println!("No cached quotas for {}. Run with '--refresh' to fetch.", target_email);
+        }
+        return;
+    };
+    if q.models.is_empty() {
         if is_json {
             println!("[]");
         } else {
@@ -499,8 +509,6 @@ pub async fn cli_quota(accounts: &[Account], active_email: Option<&str>, identif
         }
         return;
     }
-    
-    let q = quota_data.unwrap();
     if is_json {
         let proj = cache.tokens.get(target_email).and_then(|t| t.project_id.clone());
         let output = JsonQuotaOutput {
@@ -628,7 +636,10 @@ pub async fn cli_warmup(accounts: &[Account], active_email: Option<&str>, identi
         }
     };
     
-    let acc = accounts.iter().find(|a| a.email == *target_email).unwrap();
+    let Some(acc) = accounts.iter().find(|a| a.email == *target_email) else {
+        eprintln!("Error: Active account {} not found in database.", target_email);
+        std::process::exit(1);
+    };
     let mut cache = load_cli_cache();
     let mut history = load_warmup_history();
     let now = chrono::Utc::now().timestamp();
