@@ -484,7 +484,8 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
                             let rem = COOLDOWN_SECONDS - elapsed;
                             let h = rem / 3600;
                             let min = (rem % 3600) / 60;
-                            cooldown_str = format!(" [Cooldown: {}h {}m]", h, min);
+                            let local_reset = chrono::Local::now() + chrono::Duration::seconds(rem);
+                            cooldown_str = format!(" [Cooldown: {}h {}m (Resets at {})]", h, min, local_reset.format("%H:%M"));
                         }
                     }
 

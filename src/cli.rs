@@ -1183,3 +1183,45 @@ pub async fn cli_daemon(accounts: &[Account], quota_target: &str, interval_secs:
         tokio::time::sleep(Duration::from_secs(interval_secs)).await;
     }
 }
+
+pub async fn cli_check(accounts: &[Account]) {
+    println!("Checking credentials and plans for {} accounts concurrently...", accounts.len());
+    
+    let cache = load_cli_cache();
+    let mut tasks = Vec::new();
+    
+    for acc in accounts {
+        let email = acc.email.clone();
+        let refresh_token = acc.refresh_token.clone();
+        let mut cache_clone = cache.clone();
+        
+        tasks.push(tokio::spawn(async move {
+            let start = std::time::Instant::now();
+            let result = crate::google_api::ensure_valid_token(&email, &refresh_token, &mut cache_clone).await;
+            (email, result, cache_clone, start.elapsed())
+        }));
+    }
+    
+    println!("┌──────────────────────────────┬────────┬──────────────┬─────────────┐");
+    println!("│ Email                        │ Status │ Plan         │ Latency     │");
+    println!("├──────────────────────────────┼────────┼──────────────┼─────────────┤");
+    
+    let mut healthy_count = 0;
+    for task in futures::future::join_all(tasks).await {
+        if let Ok((email, res, updated_cache, elapsed)) = task {
+            let (status_str, plan_str) = match res {
+                Some((_, _)) => {
+                    healthy_count += 1;
+                    let tier = updated_cache.tokens.get(&email)
+                        .and_then(|t| t.subscription_tier.as_deref())
+                        .unwrap_or("Free");
+                    ("✓ Valid", tier)
+                }
+                None => ("✗ Failed", "N/A")
+            };
+            println!("│ {:<28} │ {:^6} │ {:^12} │ {:>8.2?} │", email, status_str, plan_str, elapsed);
+        }
+    }
+    println!("└──────────────────────────────┴────────┴──────────────┴─────────────┘");
+    println!("Summary: {} / {} Accounts Healthy", healthy_count, accounts.len());
+}

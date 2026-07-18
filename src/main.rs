@@ -98,6 +98,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "add" => {
                 cli::cli_add().await;
             }
+            "check" => {
+                cli::cli_check(&accounts).await;
+            }
             "status" => {
                 let mut is_json = false;
                 for arg in args.iter().skip(2) {
@@ -155,6 +158,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  agm                   Launch interactive terminal user interface (TUI)");
                 println!("  agm list [--json]     List configured accounts (use --json for raw data)");
                 println!("  agm add               Interactively add a new account and refresh token");
+                println!("  agm check             Verify credentials and plans for all accounts concurrently");
                 println!("  agm status [--json]   Get active account status and quotas (for tmux/sketchybar/prompts)");
                 println!("  agm daemon run [...]  Start background failover daemon (--quota gemini/claude/either, --interval secs)");
                 println!("  agm switch [id]       Switch the active account (runs interactive selector if no ID given)");
@@ -786,6 +790,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             )?;
                             terminal.show_cursor()?;
                             return Ok(());
+                        }
+                        KeyCode::Char(c) if c.is_digit(10) && c != '0' => {
+                            if !app.is_loading {
+                                let digit = c.to_digit(10).unwrap() as usize;
+                                let idx = digit - 1;
+                                let visible = app.get_visible_accounts();
+                                if idx < visible.len() {
+                                    app.list_state.select(Some(idx));
+                                    if let Some(acc) = app.get_selected_account().cloned() {
+                                        app.is_loading = true;
+                                        app.set_status(&format!("Instantly switching to {}...", acc.email));
+                                        spawn_network_task(
+                                            event_tx.clone(),
+                                            Some(acc),
+                                            Vec::new(),
+                                            app.cli_cache.clone(),
+                                            app.warmup_history.clone(),
+                                            "switch",
+                                            None,
+                                            false,
+                                            None,
+                                        );
+                                    }
+                                }
+                            }
                         }
                         KeyCode::Down | KeyCode::Char('j') => {
                             if !app.is_loading {
