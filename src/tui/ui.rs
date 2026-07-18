@@ -30,11 +30,22 @@ fn format_countdown(reset_time: &str) -> Option<String> {
     let now = chrono::Utc::now();
     if let Ok(rt) = chrono::DateTime::parse_from_rfc3339(reset_time) {
         let diff = rt.with_timezone(&chrono::Utc) - now;
-        if diff.num_seconds() > 0 {
-            let h = diff.num_seconds() / 3600;
-            let m = (diff.num_seconds() % 3600) / 60;
-            let s = diff.num_seconds() % 60;
-            return Some(format!("{:02}:{:02}:{:02}", h, m, s));
+        let total_secs = diff.num_seconds();
+        if total_secs > 0 {
+            let days = total_secs / 86400;
+            let hours = (total_secs % 86400) / 3600;
+            let mins = (total_secs % 3600) / 60;
+            let secs = total_secs % 60;
+
+            if days > 0 {
+                return Some(format!("{}d {}h", days, hours));
+            } else if hours > 0 {
+                return Some(format!("{}h {}m", hours, mins));
+            } else if mins > 0 {
+                return Some(format!("{}m {}s", mins, secs));
+            } else {
+                return Some(format!("{}s", secs));
+            }
         }
     }
     None
@@ -459,7 +470,7 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
             Line::from(vec![Span::raw("  k / Up        Select previous item in active panel")]),
             Line::from(vec![Span::raw("  s             Open keyboard-driven Sort Mode Selector menu")]),
             Line::from(vec![Span::raw("  /             Search / Filter accounts by typing email address")]),
-            Line::from(vec![Span::raw("  c             Toggle Compact layout view (hides reset countdowns for tablet/portrait)")]),
+            Line::from(vec![Span::raw("  c             Toggle Compact layout view (hides reset times for tablet/portrait)")]),
             Line::from(vec![Span::raw("  v             Open scrollable Session Logs History Explorer overlay")]),
             Line::from(vec![Span::raw("  Enter         Activate/Switch session to selected account")]),
             Line::from(vec![Span::raw("")]),
