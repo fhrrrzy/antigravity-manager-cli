@@ -4,7 +4,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event as CEvent, KeyCode, KeyEvent},
+    event::{self, Event as CEvent, KeyCode, KeyEvent},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -13,7 +13,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap, Table, Row, Cell, TableState},
     Terminal,
 };
 use serde::{Deserialize, Serialize};
@@ -146,7 +146,7 @@ struct App {
     db_path: PathBuf,
     db_desc: String,
     active_email: Option<String>,
-    list_state: ListState,
+    list_state: TableState,
     cli_cache: CliCache,
     warmup_history: HashMap<String, i64>,
     status_message: String,
@@ -157,7 +157,7 @@ struct App {
 
 impl App {
     fn new(accounts: Vec<Account>, db_path: PathBuf, db_desc: String, active: Option<String>, cache: CliCache, history: HashMap<String, i64>) -> Self {
-        let mut list_state = ListState::default();
+        let mut list_state = TableState::default();
         if !accounts.is_empty() {
             list_state.select(Some(0));
         }
@@ -2055,7 +2055,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     
@@ -2106,24 +2106,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .style(Style::default().add_modifier(Modifier::BOLD));
             f.render_widget(title, chunks[0]);
 
-            let content_chunks = Layout::default()
+        let content_chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([
-                    Constraint::Percentage(50), // Left panel: Account list & Quota summary
-                    Constraint::Percentage(50), // Right panel: Details
+                    Constraint::Percentage(60), // Left panel: Account list & Quota summary
+                    Constraint::Percentage(40), // Right panel: Details
                 ])
                 .split(chunks[1]);
 
-            let items: Vec<ListItem> = app.accounts
+            let header_cells = ["Active", "Email", "Gemini Quota", "Claude Quota", "5h Reset", "Weekly Reset"]
+                .iter()
+                .map(|h| Cell::from(*h).style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
+            let header = Row::new(header_cells)
+                .style(Style::default().bg(Color::Rgb(30, 30, 45)))
+                .height(1)
+                .bottom_margin(1);
+
+            let rows: Vec<Row> = app.accounts
                 .iter()
                 .map(|acc| {
                     let is_active = app.active_email.as_ref() == Some(&acc.email);
-                    let prefix = if is_active { "★ " } else { "  " };
-                    let style = if is_active {
-                        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default()
-                    };
+                    let active_mark = if is_active { "★" } else { " " };
                     
                     let quota_cache = app.cli_cache.quotas.get(&acc.email);
                     
@@ -2139,28 +2142,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .map(|m| m.percentage)
                     });
 
-                    let gemini_pct_str = match gemini_pct {
-                        Some(pct) => format!("G:{}%", pct),
-                        None => "G:--".to_string(),
-                    };
-                    let claude_pct_str = match claude_pct {
-                        Some(pct) => format!("C:{}%", pct),
-                        None => "C:--".to_string(),
+                    let bar_width = 8;
+                    let make_bar = |pct_opt: Option<i32>| -> (String, Color) {
+                        match pct_opt {
+                            Some(pct) => {
+                                let filled = ((pct as f64 / 100.0) * bar_width as f64).round() as usize;
+                                let empty = bar_width - filled;
+                                let bar_color = if pct >= 80 {
+                                    Color::Rgb(50, 200, 50)
+                                } else if pct >= 30 {
+                                    Color::Rgb(240, 170, 30)
+                                } else {
+                                    Color::Rgb(220, 50, 50)
+                                };
+                                (format!("{} {:>3}%", "█".repeat(filled) + &"░".repeat(empty), pct), bar_color)
+                            }
+                            None => ("N/A".to_string(), Color::DarkGray),
+                        }
                     };
 
-                    let gemini_style = match gemini_pct {
-                        Some(pct) if pct >= 80 => Style::default().fg(Color::Rgb(50, 200, 50)),
-                        Some(pct) if pct >= 30 => Style::default().fg(Color::Rgb(240, 170, 30)),
-                        Some(_) => Style::default().fg(Color::Rgb(220, 50, 50)),
-                        None => Style::default().fg(Color::DarkGray),
-                    };
-
-                    let claude_style = match claude_pct {
-                        Some(pct) if pct >= 80 => Style::default().fg(Color::Rgb(50, 200, 50)),
-                        Some(pct) if pct >= 30 => Style::default().fg(Color::Rgb(240, 170, 30)),
-                        Some(_) => Style::default().fg(Color::Rgb(220, 50, 50)),
-                        None => Style::default().fg(Color::DarkGray),
-                    };
+                    let (gemini_bar, gemini_color) = make_bar(gemini_pct);
+                    let (claude_bar, claude_color) = make_bar(claude_pct);
 
                     let mut weekly_reset = "--".to_string();
                     let mut five_h_reset = "--".to_string();
@@ -2181,32 +2183,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
 
-                    let mut spans = vec![
-                        Span::styled(prefix, style),
-                        Span::styled(format!("{:<20}", acc.email), style),
-                        Span::styled(" (", Style::default().fg(Color::DarkGray)),
-                        Span::styled(gemini_pct_str, gemini_style),
-                        Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-                        Span::styled(claude_pct_str, claude_style),
-                        Span::styled(")", Style::default().fg(Color::DarkGray)),
-                        Span::styled(" [5h:", Style::default().fg(Color::DarkGray)),
-                        Span::styled(five_h_reset, Style::default().fg(Color::Rgb(120, 180, 240))),
-                        Span::styled(" | Wk:", Style::default().fg(Color::DarkGray)),
-                        Span::styled(weekly_reset, Style::default().fg(Color::Rgb(240, 120, 240))),
-                        Span::styled("]", Style::default().fg(Color::DarkGray)),
-                    ];
-                    if is_active {
-                        spans.push(Span::styled(" ★", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)));
-                    }
-                    
-                    ListItem::new(Line::from(spans))
+                    let row_style = if is_active {
+                        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+
+                    Row::new(vec![
+                        Cell::from(active_mark).style(if is_active { Style::default().fg(Color::Green) } else { Style::default() }),
+                        Cell::from(acc.email.clone()).style(row_style),
+                        Cell::from(gemini_bar).style(Style::default().fg(gemini_color)),
+                        Cell::from(claude_bar).style(Style::default().fg(claude_color)),
+                        Cell::from(five_h_reset).style(Style::default().fg(Color::Rgb(120, 180, 240))),
+                        Cell::from(weekly_reset).style(Style::default().fg(Color::Rgb(240, 120, 240))),
+                    ])
                 })
                 .collect();
 
-            let account_list = List::new(items)
+            let widths = [
+                Constraint::Length(8),
+                Constraint::Percentage(30),
+                Constraint::Percentage(18),
+                Constraint::Percentage(18),
+                Constraint::Percentage(13),
+                Constraint::Percentage(13),
+            ];
+
+            let account_table = Table::new(rows, widths)
+                .header(header)
                 .block(Block::default().borders(Borders::ALL).title(" Accounts Summary ").style(Style::default().fg(Color::Cyan)))
                 .highlight_style(Style::default().bg(Color::Rgb(50, 50, 70)).add_modifier(Modifier::BOLD));
-            f.render_stateful_widget(account_list, content_chunks[0], &mut app.list_state);
+            f.render_stateful_widget(account_table, content_chunks[0], &mut app.list_state);
 
             if let Some(selected_acc) = app.get_selected_account() {
                 let email = &selected_acc.email;
@@ -2528,8 +2535,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             disable_raw_mode()?;
                             execute!(
                                 terminal.backend_mut(),
-                                LeaveAlternateScreen,
-                                DisableMouseCapture
+                                LeaveAlternateScreen
                             )?;
                             terminal.show_cursor()?;
                             return Ok(());
