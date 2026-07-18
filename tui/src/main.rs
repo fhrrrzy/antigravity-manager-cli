@@ -231,6 +231,35 @@ impl App {
     }
 }
 
+fn format_countdown(reset_time_str: &str) -> Option<String> {
+    if reset_time_str.is_empty() {
+        return None;
+    }
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(reset_time_str) {
+        let now = chrono::Utc::now().with_timezone(&dt.timezone());
+        let duration = dt.signed_duration_since(now);
+        let secs = duration.num_seconds();
+        if secs <= 0 {
+            return Some("ready".to_string());
+        }
+        let days = duration.num_days();
+        let h = duration.num_hours() % 24;
+        let m = duration.num_minutes() % 60;
+        let s = secs % 60;
+        if days > 0 {
+            Some(format!("{}d {}h", days, h))
+        } else if h > 0 {
+            Some(format!("{}h {}m", h, m))
+        } else if m > 0 {
+            Some(format!("{}m {}s", m, s))
+        } else {
+            Some(format!("{}s", s))
+        }
+    } else {
+        None
+    }
+}
+
 // OS Config Helpers
 fn get_data_dir() -> PathBuf {
     if let Ok(env_path) = std::env::var("ABV_DATA_DIR") {
@@ -2133,27 +2162,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         None => Style::default().fg(Color::DarkGray),
                     };
 
-                    let mut weekly_reset = "--:--".to_string();
-                    let mut five_h_reset = "--:--".to_string();
+                    let mut weekly_reset = "--".to_string();
+                    let mut five_h_reset = "--".to_string();
                     
                     if let Some(groups) = quota_cache.and_then(|q| q.quota_groups.as_ref()) {
                         for group in groups {
                             for bucket in &group.buckets {
                                 if bucket.window == "weekly" || bucket.bucket_id.contains("weekly") {
                                     if !bucket.reset_time.is_empty() {
-                                        weekly_reset = if bucket.reset_time.len() >= 16 {
-                                            bucket.reset_time[11..16].to_string()
-                                        } else {
-                                            bucket.reset_time.clone()
-                                        };
+                                        weekly_reset = format_countdown(&bucket.reset_time).unwrap_or_else(|| "--".to_string());
                                     }
                                 } else if bucket.window == "5h" || bucket.bucket_id.contains("5h") {
                                     if !bucket.reset_time.is_empty() {
-                                        five_h_reset = if bucket.reset_time.len() >= 16 {
-                                            bucket.reset_time[11..16].to_string()
-                                        } else {
-                                            bucket.reset_time.clone()
-                                        };
+                                        five_h_reset = format_countdown(&bucket.reset_time).unwrap_or_else(|| "--".to_string());
                                     }
                                 }
                             }
@@ -2282,12 +2303,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                             let mut reset_str = String::new();
                             if !m.reset_time.is_empty() {
-                                let display_time = if m.reset_time.len() >= 16 {
-                                    &m.reset_time[11..16]
-                                } else {
-                                    &m.reset_time
-                                };
-                                reset_str = format!(" [Reset: {}]", display_time);
+                                if let Some(cd) = format_countdown(&m.reset_time) {
+                                    reset_str = format!(" [Reset in: {}]", cd);
+                                }
                             }
 
                             quota_items.push(ListItem::new(Line::from(vec![
