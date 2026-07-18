@@ -294,6 +294,36 @@ struct ThemePalette {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct AccountHealth {
+    #[serde(default)]
+    pub consecutive_failures: u32,
+    #[serde(default)]
+    pub last_error: Option<String>,
+    #[serde(default)]
+    pub last_check_timestamp: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct JsonAccountInfo {
+    email: String,
+    name: String,
+    active: bool,
+    source: String,
+    consecutive_failures: u32,
+    last_error: Option<String>,
+    last_check_timestamp: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct JsonQuotaOutput {
+    email: String,
+    subscription_tier: Option<String>,
+    project_id: Option<String>,
+    models: Vec<ModelQuota>,
+    quota_groups: Option<Vec<QuotaGroup>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct CliCache {
     active_email: Option<String>,
     #[serde(default)]
@@ -302,6 +332,8 @@ struct CliCache {
     quotas: HashMap<String, QuotaData>,
     #[serde(default)]
     theme: Option<String>,
+    #[serde(default)]
+    health: HashMap<String, AccountHealth>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -834,6 +866,7 @@ fn load_cli_cache() -> CliCache {
         tokens: HashMap::new(),
         quotas: HashMap::new(),
         theme: None,
+        health: HashMap::new(),
     }
 }
 
@@ -842,6 +875,32 @@ fn save_cli_cache(cache: &CliCache) {
     if let Ok(content) = serde_json::to_string_pretty(cache) {
         let _ = fs::write(&path, content);
     }
+}
+
+fn record_health_failure(email: &str, error_msg: &str, cli_cache: &mut CliCache) {
+    let now = chrono::Utc::now().timestamp();
+    let health_entry = cli_cache.health.entry(email.to_string()).or_insert_with(|| AccountHealth {
+        consecutive_failures: 0,
+        last_error: None,
+        last_check_timestamp: Some(now),
+    });
+    health_entry.consecutive_failures += 1;
+    health_entry.last_error = Some(error_msg.to_string());
+    health_entry.last_check_timestamp = Some(now);
+    save_cli_cache(cli_cache);
+}
+
+fn record_health_success(email: &str, cli_cache: &mut CliCache) {
+    let now = chrono::Utc::now().timestamp();
+    let health_entry = cli_cache.health.entry(email.to_string()).or_insert_with(|| AccountHealth {
+        consecutive_failures: 0,
+        last_error: None,
+        last_check_timestamp: Some(now),
+    });
+    health_entry.consecutive_failures = 0;
+    health_entry.last_error = None;
+    health_entry.last_check_timestamp = Some(now);
+    save_cli_cache(cli_cache);
 }
 
 fn get_warmup_history_path() -> PathBuf {
@@ -1455,12 +1514,16 @@ async fn ensure_valid_token(email: &str, refresh_token: &str, cli_cache: &mut Cl
     let now = chrono::Utc::now().timestamp();
     if let Some(tc) = cli_cache.tokens.get(email) {
         if tc.expiry_timestamp > now + 900 {
+            // Keep successes fresh
             return Some((tc.access_token.clone(), tc.project_id.clone()));
         }
     }
     
     if let Some((new_tok, new_exp)) = async_refresh_token(refresh_token.to_string()).await {
         let (proj_id, tier) = async_fetch_project_and_tier(&new_tok).await;
+        
+        record_health_success(email, cli_cache);
+
         cli_cache.tokens.insert(email.to_string(), TokenCache {
             access_token: new_tok.clone(),
             expiry_timestamp: new_exp,
@@ -1477,6 +1540,7 @@ async fn ensure_valid_token(email: &str, refresh_token: &str, cli_cache: &mut Cl
         
         Some((new_tok, proj_id))
     } else {
+        record_health_failure(email, "Failed to refresh OAuth token", cli_cache);
         None
     }
 }
@@ -1934,6 +1998,7 @@ fn spawn_network_task(
                         }));
                     }
                     Err(e) => {
+                        record_health_failure(&email, &format!("Fetch quota failed: {}", e), &mut cli_cache);
                         let _ = event_tx.send(AppEvent::NetworkError(format!("Fetch quota failed: {}", e)));
                     }
                 }
@@ -2244,7 +2309,26 @@ fn cli_restore(db_path: &Path, filepath: &str) {
     println!("\nRestore complete! Restored: {} accounts, Skipped: {} (duplicates/errors).", restored_count, skipped_count);
 }
 
-fn cli_list(accounts: &[Account], active_email: Option<&str>, source: &str) {
+fn cli_list(accounts: &[Account], active_email: Option<&str>, source: &str, is_json: bool) {
+    let cache = load_cli_cache();
+    if is_json {
+        let json_accs: Vec<JsonAccountInfo> = accounts.iter().map(|acc| {
+            let is_active = active_email == Some(&acc.email);
+            let health_data = cache.health.get(&acc.email);
+            JsonAccountInfo {
+                email: acc.email.clone(),
+                name: acc.name.clone(),
+                active: is_active,
+                source: acc.source.clone(),
+                consecutive_failures: health_data.map(|h| h.consecutive_failures).unwrap_or(0),
+                last_error: health_data.and_then(|h| h.last_error.clone()),
+                last_check_timestamp: health_data.and_then(|h| h.last_check_timestamp),
+            }
+        }).collect();
+        println!("{}", serde_json::to_string_pretty(&json_accs).unwrap_or_default());
+        return;
+    }
+
     if accounts.is_empty() {
         println!("No accounts configured. Check backup file.");
         return;
@@ -2259,6 +2343,134 @@ fn cli_list(accounts: &[Account], active_email: Option<&str>, source: &str) {
         println!("{:<3} | {:<6} | {:<32} | {:<20}", idx + 1, active_mark, acc.email, acc.name);
     }
     println!("\n★ = Current active account used by Antigravity.");
+}
+
+async fn cli_auto_switch(accounts: &[Account], active_email: Option<&str>) {
+    if accounts.is_empty() {
+        eprintln!("Error: No accounts configured.");
+        std::process::exit(1);
+    }
+
+    let cache = load_cli_cache();
+    let mut best_acc: Option<&Account> = None;
+    let mut best_score = i32::MIN;
+
+    let get_weekly_pct = |quota_cache: Option<&QuotaData>, is_claude: bool| -> i32 {
+        let q = match quota_cache {
+            Some(q) => q,
+            None => return -1,
+        };
+        let groups = match &q.quota_groups {
+            Some(g) => g,
+            None => return -1,
+        };
+        for group in groups {
+            let gp_name = group.display_name.to_lowercase();
+            let target_match = if is_claude {
+                gp_name.contains("claude") || gp_name.contains("anthropic")
+            } else {
+                gp_name.contains("gemini") || gp_name.contains("google")
+            };
+            
+            for bucket in &group.buckets {
+                let b_id = bucket.bucket_id.to_lowercase();
+                let b_disp = bucket.display_name.as_ref().map(|s| s.to_lowercase()).unwrap_or_default();
+                let is_weekly = bucket.window == "weekly" || b_id.contains("weekly") || b_disp.contains("weekly");
+                
+                let name_match = target_match 
+                    || (is_claude && (b_id.contains("claude") || b_disp.contains("claude")))
+                    || (!is_claude && (b_id.contains("gemini") || b_disp.contains("gemini")));
+                    
+                if is_weekly && name_match {
+                    return (bucket.remaining_fraction * 100.0).round() as i32;
+                }
+            }
+        }
+        -1
+    };
+
+    println!("Evaluating account pool for auto-switching...");
+
+    for acc in accounts {
+        let email = &acc.email;
+        let mut score = 1000;
+
+        // 1. Health/Failure penalty
+        if let Some(health) = cache.health.get(email) {
+            if health.consecutive_failures >= 3 {
+                score -= 10000;
+            } else {
+                score -= 300 * health.consecutive_failures as i32;
+            }
+        }
+
+        // 2. 5-Hour model quota usage penalty
+        if let Some(q) = cache.quotas.get(email) {
+            let mut gemini_pct = -1;
+            let mut claude_pct = -1;
+
+            if let Some(gemini_m) = q.models.iter().find(|m| m.name.contains("gemini") || m.display_name.as_ref().map(|n| n.contains("Gemini")).unwrap_or(false)) {
+                gemini_pct = gemini_m.percentage;
+            }
+            if let Some(claude_m) = q.models.iter().find(|m| m.name.contains("claude") || m.display_name.as_ref().map(|n| n.contains("Claude")).unwrap_or(false)) {
+                claude_pct = claude_m.percentage;
+            }
+
+            let max_pct = std::cmp::max(gemini_pct, claude_pct);
+            if max_pct >= 0 {
+                score -= max_pct;
+                if gemini_pct >= 100 || claude_pct >= 100 {
+                    score -= 500;
+                }
+            } else {
+                score -= 50;
+            }
+        } else {
+            score -= 100;
+        }
+
+        // 3. Weekly remaining quota bonus
+        let gemini_wk_pct = get_weekly_pct(cache.quotas.get(email), false);
+        let claude_wk_pct = get_weekly_pct(cache.quotas.get(email), true);
+
+        let min_wk_pct = if gemini_wk_pct >= 0 && claude_wk_pct >= 0 {
+            std::cmp::min(gemini_wk_pct, claude_wk_pct)
+        } else if gemini_wk_pct >= 0 {
+            gemini_wk_pct
+        } else if claude_wk_pct >= 0 {
+            claude_wk_pct
+        } else {
+            -1
+        };
+
+        if min_wk_pct >= 0 {
+            score += min_wk_pct;
+            if min_wk_pct == 0 {
+                score -= 500;
+            }
+        } else {
+            score += 50;
+        }
+
+        println!("  - Account: {} | Score: {}", email, score);
+
+        if score > best_score {
+            best_score = score;
+            best_acc = Some(acc);
+        }
+    }
+
+    if let Some(best) = best_acc {
+        let current_active = active_email.unwrap_or("");
+        if best.email == current_active {
+            println!("✓ Current active account {} is already the best choice (Score: {}).", best.email, best_score);
+        } else {
+            println!("✓ Auto-switched: Healthiest account is {} (Score: {})", best.email, best_score);
+            cli_switch(accounts, &best.email).await;
+        }
+    } else {
+        eprintln!("Error: No viable accounts found to auto-switch.");
+    }
 }
 
 async fn cli_switch(accounts: &[Account], identifier: &str) {
@@ -2313,21 +2525,27 @@ async fn cli_switch(accounts: &[Account], identifier: &str) {
     }
 }
 
-async fn cli_quota(accounts: &[Account], active_email: Option<&str>, identifier: Option<&str>, refresh: bool) {
+async fn cli_quota(accounts: &[Account], active_email: Option<&str>, identifier: Option<&str>, refresh: bool, is_json: bool) {
     let mut cache = load_cli_cache();
 
     if identifier == Some("all") {
         if refresh {
-            println!("Refreshing quotas for ALL configured accounts sequentially...");
+            if !is_json {
+                println!("Refreshing quotas for ALL configured accounts sequentially...");
+            }
             let count_accs = accounts.len();
             for (idx, acc) in accounts.iter().enumerate() {
                 let email = &acc.email;
-                println!("[{}/{}] Fetching quota for {}...", idx + 1, count_accs, email);
+                if !is_json {
+                    println!("[{}/{}] Fetching quota for {}...", idx + 1, count_accs, email);
+                }
                 
                 let (access_token, mut project_id) = match ensure_valid_token(email, &acc.refresh_token, &mut cache).await {
                     Some(t) => t,
                     None => {
-                        eprintln!("✗ Error: Failed to validate credentials for {}. Skipping.", email);
+                        if !is_json {
+                            eprintln!("✗ Error: Failed to validate credentials for {}. Skipping.", email);
+                        }
                         continue;
                     }
                 };
@@ -2350,16 +2568,41 @@ async fn cli_quota(accounts: &[Account], active_email: Option<&str>, identifier:
                             quota_groups: summary,
                         });
                         save_cli_cache(&cache);
-                        println!("✓ Quota updated.");
+                        if !is_json {
+                            println!("✓ Quota updated.");
+                        }
                     }
                     Err(e) => {
-                        eprintln!("✗ Error: {}", e);
+                        if !is_json {
+                            eprintln!("✗ Error: {}", e);
+                        }
                     }
                 }
             }
-            println!("Quotas refresh complete.");
+            if !is_json {
+                println!("Quotas refresh complete.");
+            }
         }
         
+        if is_json {
+            let mut list = Vec::new();
+            for acc in accounts {
+                let email = &acc.email;
+                if let Some(q) = cache.quotas.get(email) {
+                    let proj = cache.tokens.get(email).and_then(|t| t.project_id.clone());
+                    list.push(JsonQuotaOutput {
+                        email: email.clone(),
+                        subscription_tier: q.subscription_tier.clone(),
+                        project_id: proj,
+                        models: q.models.clone(),
+                        quota_groups: q.quota_groups.clone(),
+                    });
+                }
+            }
+            println!("{}", serde_json::to_string_pretty(&list).unwrap_or_default());
+            return;
+        }
+
         for acc in accounts {
             let email = &acc.email;
             if let Some(q) = cache.quotas.get(email) {
@@ -2406,7 +2649,9 @@ async fn cli_quota(accounts: &[Account], active_email: Option<&str>, identifier:
     };
     
     if refresh {
-        println!("Fetching latest quota from Google APIs for {}...", target_email);
+        if !is_json {
+            println!("Fetching latest quota from Google APIs for {}...", target_email);
+        }
         let (api_proj, tier) = async_fetch_project_and_tier(&access_token).await;
         if api_proj.is_some() {
             project_id = api_proj.clone();
@@ -2425,7 +2670,9 @@ async fn cli_quota(accounts: &[Account], active_email: Option<&str>, identifier:
                     quota_groups: summary,
                 });
                 save_cli_cache(&cache);
-                println!("✓ Quota cache updated.");
+                if !is_json {
+                    println!("✓ Quota cache updated.");
+                }
             }
             Err(e) => {
                 eprintln!("Error fetching quota: {}", e);
@@ -2436,11 +2683,28 @@ async fn cli_quota(accounts: &[Account], active_email: Option<&str>, identifier:
     
     let quota_data = cache.quotas.get(target_email);
     if quota_data.is_none() || quota_data.unwrap().models.is_empty() {
-        println!("No cached quotas for {}. Run with '--refresh' to fetch.", target_email);
+        if is_json {
+            println!("[]");
+        } else {
+            println!("No cached quotas for {}. Run with '--refresh' to fetch.", target_email);
+        }
         return;
     }
     
     let q = quota_data.unwrap();
+    if is_json {
+        let proj = cache.tokens.get(target_email).and_then(|t| t.project_id.clone());
+        let output = JsonQuotaOutput {
+            email: target_email.to_string(),
+            subscription_tier: q.subscription_tier.clone(),
+            project_id: proj,
+            models: q.models.clone(),
+            quota_groups: q.quota_groups.clone(),
+        };
+        println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
+        return;
+    }
+
     println!("\nQuota for {}:", target_email);
     println!("Subscription Tier: {}", q.subscription_tier.as_deref().unwrap_or("N/A"));
     println!("Project ID: {}", project_id.as_deref().unwrap_or("N/A"));
@@ -2684,7 +2948,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let subcommand = &args[1];
         match subcommand.as_str() {
             "list" => {
-                cli_list(&accounts, active_email.as_deref(), &db_desc);
+                let mut is_json = false;
+                for arg in args.iter().skip(2) {
+                    if arg == "--json" {
+                        is_json = true;
+                    }
+                }
+                cli_list(&accounts, active_email.as_deref(), &db_desc, is_json);
             }
             "switch" => {
                 if args.len() < 3 {
@@ -2693,17 +2963,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 cli_switch(&accounts, &args[2]).await;
             }
+            "auto-switch" => {
+                cli_auto_switch(&accounts, active_email.as_deref()).await;
+            }
             "quota" => {
                 let mut identifier = None;
                 let mut refresh = false;
+                let mut is_json = false;
                 for arg in args.iter().skip(2) {
                     if arg == "--refresh" {
                         refresh = true;
+                    } else if arg == "--json" {
+                        is_json = true;
                     } else if !arg.starts_with('-') {
                         identifier = Some(arg.as_str());
                     }
                 }
-                cli_quota(&accounts, active_email.as_deref(), identifier, refresh).await;
+                cli_quota(&accounts, active_email.as_deref(), identifier, refresh, is_json).await;
             }
             "warmup" => {
                 let mut identifier = None;
@@ -2747,9 +3023,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Antigravity Manager (Rust Unified Edition)\n");
                 println!("Usage:");
                 println!("  agm                   Launch interactive terminal user interface (TUI)");
-                println!("  agm list              List configured accounts");
-                println!("  agm switch <id>       Switch the active account");
-                println!("  agm quota [id] [-r]   Display quotas (use --refresh to update)");
+                println!("  agm list [--json]     List configured accounts (use --json for raw data)");
+                println!("  agm switch <id>       Switch the active account manually");
+                println!("  agm auto-switch       Automatically switch to the healthiest/fullest standby account");
+                println!("  agm quota [id] [-r]   Display quotas (use --refresh to update, --json for raw data)");
                 println!("  agm quota all [-r]    Display/Refresh quotas for ALL accounts");
                 println!("  agm warmup [id] [flg] Run warmup cycles (use --model <name> or --force)");
                 println!("  agm warmup all        Sequentially warm up ALL configured accounts");
@@ -2757,7 +3034,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  agm restore <path>    Restore accounts from a JSON backup file");
                 println!("\nExamples:");
                 println!("  agm switch 3");
-                println!("  agm quota all --refresh");
+                println!("  agm auto-switch");
+                println!("  agm quota all --refresh --json");
                 println!("  agm warmup all");
                 println!("  agm backup ~/my_backup.json");
                 println!("  agm restore ~/my_backup.json");
@@ -4180,6 +4458,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 AppEvent::NetworkSuccess(result) => {
                     app.is_loading = false;
+                    app.cli_cache = load_cli_cache();
                     match result {
                         NetworkResult::AddAccountComplete { new_account } => {
                             app.input_mode = InputMode::Normal;
@@ -4279,6 +4558,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 AppEvent::NetworkError(err) => {
                     app.is_loading = false;
+                    app.cli_cache = load_cli_cache();
                     app.set_status(&err);
                     
                     if let InputMode::AddAccount { email, refresh_token, active_field, .. } = &app.input_mode {
