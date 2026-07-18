@@ -1,0 +1,12 @@
+# Rust build output
+tui/target/
+
+# Local cache and credentials history (should not be checked in)
+cli_cache.json
+warmup_history.json
+
+# IDE / System files
+.vscode/
+.idea/
+.DS_Store
+*.swp
