@@ -52,6 +52,7 @@ pub struct App {
     pub last_auto_refresh: Option<Instant>,
     pub show_sort_menu: bool,
     pub sort_menu_state: ListState,
+    pub privacy_mode: bool,
 }
 
 impl App {
@@ -122,6 +123,7 @@ impl App {
                 s.select(Some(0));
                 s
             },
+            privacy_mode: false,
         };
         app.sort_accounts();
         app

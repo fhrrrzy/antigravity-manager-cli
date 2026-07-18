@@ -51,6 +51,49 @@ fn format_countdown(reset_time: &str) -> Option<String> {
     None
 }
 
+pub fn mask_email(email: &str, enabled: bool) -> String {
+    if !enabled {
+        return email.to_string();
+    }
+    let parts: Vec<&str> = email.split('@').collect();
+    if parts.len() != 2 {
+        if email.len() <= 4 {
+            return "****".to_string();
+        }
+        return format!("{}***{}", &email[..1], &email[email.len()-1..]);
+    }
+    let local = parts[0];
+    let domain = parts[1];
+    
+    let masked_local = if local.len() <= 2 {
+        format!("{}*", &local[..1])
+    } else if local.len() <= 4 {
+        format!("{}**{}", &local[..1], &local[local.len()-1..])
+    } else {
+        let show_first = if local.len() >= 6 { 2 } else { 1 };
+        let show_last = if local.len() >= 6 { 3 } else { 1 };
+        if local.len() > show_first + show_last {
+            format!(
+                "{}***{}",
+                &local[..show_first],
+                &local[local.len() - show_last..]
+            )
+        } else {
+            format!("{}***{}", &local[..1], &local[local.len()-1..])
+        }
+    };
+    
+    let domain_parts: Vec<&str> = domain.rsplitn(2, '.').collect();
+    let masked_domain = if domain_parts.len() == 2 {
+        let tld = domain_parts[0];
+        "****.".to_string() + tld
+    } else {
+        "****".to_string()
+    };
+    
+    format!("{}@{}", masked_local, masked_domain)
+}
+
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
     let popup_layout = Layout::default()
         .direction(Direction::Vertical)
@@ -84,10 +127,12 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
         .split(f.size());
 
     let local_time = chrono::Local::now().format("%H:%M:%S").to_string();
-    let active_str = app.active_email.as_deref().unwrap_or("None");
+    let active_masked = app.active_email.as_deref()
+        .map(|e| mask_email(e, app.privacy_mode))
+        .unwrap_or_else(|| "None".to_string());
     let title = Paragraph::new(format!(
         " Antigravity Manager TUI | Active: {} | db: {} | 🐉 {} | 🕒 {} | 🟢 Online ",
-        active_str, app.db_desc, palette.name, local_time
+        active_masked, app.db_desc, palette.name, local_time
     ))
     .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" System Control Dashboard ").style(Style::default().fg(palette.border_active)))
     .style(Style::default().fg(palette.fg).add_modifier(Modifier::BOLD));
@@ -267,7 +312,7 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
         };
 
         let email_cell = Cell::from(ratatui::text::Text::from(vec![
-            Line::from(acc.email.clone()).style(email_style),
+            Line::from(mask_email(&acc.email, app.privacy_mode)).style(email_style),
             Line::from(format!("└─ {}", tier_display)).style(Style::default().fg(tier_color)),
         ]));
 
@@ -347,7 +392,7 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
         };
         
         let header_text = vec![
-            Line::from(vec![Span::raw(" Email: "), Span::styled(email, Style::default().add_modifier(Modifier::BOLD))]),
+            Line::from(vec![Span::raw(" Email: "), Span::styled(mask_email(email, app.privacy_mode), Style::default().add_modifier(Modifier::BOLD))]),
             Line::from(vec![Span::raw(" Subscription Tier: "), Span::styled(tier, Style::default().fg(palette.border_active))]),
             Line::from(vec![Span::raw(" Project ID: "), Span::styled(project_id, Style::default().fg(palette.yellow_warning))]),
             Line::from(vec![Span::raw(" Status: "), status_span]),
@@ -473,7 +518,7 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
         .wrap(Wrap { trim: true });
     f.render_widget(status_block, chunks[2]);
 
-    let footer = Paragraph::new(" [Enter] Switch | [r] Refresh | [w] Warm Up | [/] Find | [s] Sort | [c] Compact | [v] Logs | [t] Theme | [h] Help")
+    let footer = Paragraph::new(" [Enter] Switch | [r] Refresh | [w] Warm Up | [/] Find | [s] Sort | [c] Compact | [p] Privacy | [v] Logs | [t] Theme | [h] Help")
         .style(Style::default().fg(palette.border_inactive));
     f.render_widget(footer, chunks[3]);
 
@@ -496,6 +541,7 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
             Line::from(vec![Span::raw("  s             Open keyboard-driven Sort Mode Selector menu")]),
             Line::from(vec![Span::raw("  /             Search / Filter accounts by typing email address")]),
             Line::from(vec![Span::raw("  c             Toggle Compact layout view (hides reset times for tablet/portrait)")]),
+            Line::from(vec![Span::raw("  p             Toggle Privacy Mode (masks email addresses in screenshots)")]),
             Line::from(vec![Span::raw("  v             Open scrollable Session Logs History Explorer overlay")]),
             Line::from(vec![Span::raw("  Enter         Activate/Switch session to selected account")]),
             Line::from(vec![Span::raw("")]),
@@ -645,7 +691,7 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
 
         let warn_desc = Paragraph::new(format!(
             "Are you sure you want to permanently delete the following account from your database?\n\n  {}",
-            email
+            mask_email(email, app.privacy_mode)
         ))
         .wrap(Wrap { trim: true })
         .style(Style::default().fg(palette.fg));

@@ -683,6 +683,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 app.set_status(status);
                             }
                         }
+                        KeyCode::Char('p') | KeyCode::Char('P') => {
+                            if !app.is_loading {
+                                app.privacy_mode = !app.privacy_mode;
+                                let status = if app.privacy_mode { "Privacy Mode enabled (emails masked)." } else { "Privacy Mode disabled (emails revealed)." };
+                                app.set_status(status);
+                            }
+                        }
                         KeyCode::Char('v') | KeyCode::Char('V') => {
                             if !app.is_loading {
                                 app.show_logs = true;
