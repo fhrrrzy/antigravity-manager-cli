@@ -59,9 +59,26 @@ struct ModelQuota {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct QuotaBucket {
+    bucket_id: String,
+    window: String,
+    remaining_fraction: f64,
+    reset_time: String,
+    display_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct QuotaGroup {
+    display_name: String,
+    buckets: Vec<QuotaBucket>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct QuotaData {
     subscription_tier: Option<String>,
     models: Vec<ModelQuota>,
+    #[serde(default)]
+    quota_groups: Option<Vec<QuotaGroup>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -724,6 +741,85 @@ async fn async_fetch_quota(access_token: &str, project_id: Option<&str>) -> Resu
     Err(format!("All endpoints failed: {}", last_err))
 }
 
+async fn async_fetch_quota_summary(access_token: &str, project_id: Option<&str>) -> Option<Vec<QuotaGroup>> {
+    let client = reqwest::Client::new();
+    let payload = if let Some(pid) = project_id {
+        json!({ "project": pid })
+    } else {
+        json!({})
+    };
+    
+    let urls = [
+        "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:retrieveUserQuotaSummary",
+        "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+        "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+    ];
+    
+    for url in urls.iter() {
+        let res = client
+            .post(*url)
+            .header("Authorization", format!("Bearer {}", access_token))
+            .header("Content-Type", "application/json")
+            .header("User-Agent", "vscode/1.X.X (Antigravity/4.3.0)")
+            .json(&payload)
+            .send()
+            .await;
+            
+        if let Ok(resp) = res {
+            if resp.status().is_success() {
+                #[derive(Deserialize)]
+                struct RawBucket {
+                    #[serde(rename = "bucketId")]
+                    bucket_id: Option<String>,
+                    window: Option<String>,
+                    #[serde(rename = "remainingFraction")]
+                    remaining_fraction: Option<f64>,
+                    #[serde(rename = "resetTime")]
+                    reset_time: Option<String>,
+                    #[serde(rename = "displayName")]
+                    display_name: Option<String>,
+                }
+                #[derive(Deserialize)]
+                struct RawGroup {
+                    #[serde(rename = "displayName")]
+                    display_name: Option<String>,
+                    buckets: Option<Vec<RawBucket>>,
+                }
+                #[derive(Deserialize)]
+                struct RawResponse {
+                    groups: Option<Vec<RawGroup>>,
+                }
+                
+                if let Ok(data) = resp.json::<RawResponse>().await {
+                    if let Some(raw_groups) = data.groups {
+                        let mut groups = Vec::new();
+                        for rg in raw_groups {
+                            let mut buckets = Vec::new();
+                            if let Some(raw_buckets) = rg.buckets {
+                                for rb in raw_buckets {
+                                    buckets.push(QuotaBucket {
+                                        bucket_id: rb.bucket_id.unwrap_or_default(),
+                                        window: rb.window.unwrap_or_default(),
+                                        remaining_fraction: rb.remaining_fraction.unwrap_or(0.0),
+                                        reset_time: rb.reset_time.unwrap_or_default(),
+                                        display_name: rb.display_name,
+                                    });
+                                }
+                            }
+                            groups.push(QuotaGroup {
+                                display_name: rg.display_name.unwrap_or_default(),
+                                buckets,
+                            });
+                        }
+                        return Some(groups);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 async fn async_trigger_warmup(access_token: &str, model_name: &str, project_id: Option<&str>, email: &str) -> Result<(), String> {
     let timestamp_ms = chrono::Utc::now().timestamp_millis();
     let random_hex = &Uuid::new_v4().simple().to_string()[..8];
@@ -1040,11 +1136,13 @@ fn spawn_network_task(
                     }
                     let (access_token, resolved_proj_id) = token_info.unwrap();
                     
+                    let summary = async_fetch_quota_summary(&access_token, resolved_proj_id.as_deref()).await;
                     if let Ok(models) = async_fetch_quota(&access_token, resolved_proj_id.as_deref()).await {
                         let tier = cli_cache.tokens.get(email).and_then(|d| d.subscription_tier.clone());
                         let q = QuotaData {
                             subscription_tier: tier,
                             models,
+                            quota_groups: summary,
                         };
                         
                         // Send incremental update back to TUI right away
@@ -1166,7 +1264,7 @@ fn spawn_network_task(
                 if let Some(fd) = details {
                     let _ = event_tx.send(AppEvent::NetworkSuccess(NetworkResult::QuotaRefreshed {
                         email: account.email,
-                        quota: QuotaData { subscription_tier: fd.subscription_tier, models: Vec::new() },
+                        quota: QuotaData { subscription_tier: fd.subscription_tier, models: Vec::new(), quota_groups: None },
                         project_id: fd.project_id,
                     }));
                 }
@@ -1182,12 +1280,14 @@ fn spawn_network_task(
                 }
                 let (access_token, resolved_proj_id) = token_info.unwrap();
                 
+                let summary = async_fetch_quota_summary(&access_token, resolved_proj_id.as_deref()).await;
                 match async_fetch_quota(&access_token, resolved_proj_id.as_deref()).await {
                     Ok(models) => {
                         let tier = cli_cache.tokens.get(&email).and_then(|d| d.subscription_tier.clone());
                         let q = QuotaData {
                             subscription_tier: tier,
                             models,
+                            quota_groups: summary,
                         };
                         let _ = event_tx.send(AppEvent::NetworkSuccess(NetworkResult::QuotaRefreshed {
                             email,
@@ -1506,11 +1606,13 @@ async fn cli_quota(accounts: &[Account], active_email: Option<&str>, identifier:
                     }
                 }
                 
+                let summary = async_fetch_quota_summary(&access_token, project_id.as_deref()).await;
                 match async_fetch_quota(&access_token, project_id.as_deref()).await {
                     Ok(models) => {
                         cache.quotas.insert(email.clone(), QuotaData {
                             subscription_tier: tier.or_else(|| cache.tokens.get(email).and_then(|t| t.subscription_tier.clone())),
                             models,
+                            quota_groups: summary,
                         });
                         save_cli_cache(&cache);
                         println!("✓ Quota updated.");
@@ -1579,11 +1681,13 @@ async fn cli_quota(accounts: &[Account], active_email: Option<&str>, identifier:
             }
         }
         
+        let summary = async_fetch_quota_summary(&access_token, project_id.as_deref()).await;
         match async_fetch_quota(&access_token, project_id.as_deref()).await {
             Ok(models) => {
                 cache.quotas.insert(target_email.to_string(), QuotaData {
                     subscription_tier: tier.or_else(|| cache.tokens.get(target_email).and_then(|t| t.subscription_tier.clone())),
                     models,
+                    quota_groups: summary,
                 });
                 save_cli_cache(&cache);
                 println!("✓ Quota cache updated.");
@@ -2029,14 +2133,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         None => Style::default().fg(Color::DarkGray),
                     };
 
+                    let mut weekly_reset = "--:--".to_string();
+                    let mut five_h_reset = "--:--".to_string();
+                    
+                    if let Some(groups) = quota_cache.and_then(|q| q.quota_groups.as_ref()) {
+                        for group in groups {
+                            for bucket in &group.buckets {
+                                if bucket.window == "weekly" || bucket.bucket_id.contains("weekly") {
+                                    if !bucket.reset_time.is_empty() {
+                                        weekly_reset = if bucket.reset_time.len() >= 16 {
+                                            bucket.reset_time[11..16].to_string()
+                                        } else {
+                                            bucket.reset_time.clone()
+                                        };
+                                    }
+                                } else if bucket.window == "5h" || bucket.bucket_id.contains("5h") {
+                                    if !bucket.reset_time.is_empty() {
+                                        five_h_reset = if bucket.reset_time.len() >= 16 {
+                                            bucket.reset_time[11..16].to_string()
+                                        } else {
+                                            bucket.reset_time.clone()
+                                        };
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     let mut spans = vec![
                         Span::styled(prefix, style),
-                        Span::styled(format!("{:<27}", acc.email), style),
+                        Span::styled(format!("{:<20}", acc.email), style),
                         Span::styled(" (", Style::default().fg(Color::DarkGray)),
                         Span::styled(gemini_pct_str, gemini_style),
                         Span::styled(" | ", Style::default().fg(Color::DarkGray)),
                         Span::styled(claude_pct_str, claude_style),
                         Span::styled(")", Style::default().fg(Color::DarkGray)),
+                        Span::styled(" [5h:", Style::default().fg(Color::DarkGray)),
+                        Span::styled(five_h_reset, Style::default().fg(Color::Rgb(120, 180, 240))),
+                        Span::styled(" | Wk:", Style::default().fg(Color::DarkGray)),
+                        Span::styled(weekly_reset, Style::default().fg(Color::Rgb(240, 120, 240))),
+                        Span::styled("]", Style::default().fg(Color::DarkGray)),
                     ];
                     if is_active {
                         spans.push(Span::styled(" ★", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)));
