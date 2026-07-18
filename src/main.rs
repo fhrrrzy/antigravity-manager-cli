@@ -774,14 +774,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
 
                     match key.code {
-                        KeyCode::Tab => {
-                            if !app.is_loading {
-                                app.focused_panel = match app.focused_panel {
-                                    Focus::Accounts => Focus::Breakdown,
-                                    Focus::Breakdown => Focus::Accounts,
-                                };
-                            }
-                        }
+
                         KeyCode::Char('h') => {
                             if !app.is_loading {
                                 app.show_help = true;

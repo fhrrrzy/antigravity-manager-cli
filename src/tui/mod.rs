@@ -350,7 +350,7 @@ impl App {
         let rel_x = col_x.saturating_sub(area.x + 1);
         let pct_click = ((rel_x as f32 / inner_width as f32) * 100.0).round() as u32;
         
-        if pct_click < 8 {
+        if pct_click < 5 {
             Some(0)
         } else if pct_click < 40 {
             Some(1)
