@@ -1996,10 +1996,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     
                     let gemini_pct = quota_cache.and_then(|q| {
                         q.models.iter()
-                            .find(|m| m.name.contains("flash-lite") || m.name.contains("flash_lite") || m.name.contains("flash_lite_preview") || m.display_name.as_ref().map(|n| n.contains("Flash Lite")).unwrap_or(false))
-                            .or_else(|| {
-                                q.models.iter().find(|m| m.name.contains("flash") || m.display_name.as_ref().map(|n| n.contains("Flash")).unwrap_or(false))
-                            })
+                            .find(|m| m.name.contains("gemini") || m.display_name.as_ref().map(|n| n.contains("Gemini")).unwrap_or(false))
                             .map(|m| m.percentage)
                     });
                     
