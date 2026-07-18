@@ -13,7 +13,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap, Table, Row, Cell, TableState, ListState},
+    widgets::{Block, Borders, BorderType, Clear, List, ListItem, Paragraph, Wrap, Table, Row, Cell, TableState, ListState, Scrollbar, ScrollbarOrientation, ScrollbarState},
     Terminal,
 };
 use serde::{Deserialize, Serialize};
@@ -414,6 +414,8 @@ struct App {
     show_theme_selector: bool,
     theme_search_query: String,
     theme_list_state: ListState,
+    log_search_query: String,
+    is_searching_logs: bool,
 }
 
 impl App {
@@ -463,6 +465,8 @@ impl App {
             show_theme_selector: false,
             theme_search_query: String::new(),
             theme_list_state,
+            log_search_query: String::new(),
+            is_searching_logs: false,
         };
         app.sort_accounts();
         app
@@ -2835,7 +2839,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 " Antigravity Manager TUI | Active: {} | db: {} | 🐉 {} | 🕒 {} | 🟢 Online ",
                 active_str, app.db_desc, palette.name, local_time
             ))
-            .block(Block::default().borders(Borders::ALL).title(" System Control Dashboard ").style(Style::default().fg(palette.border_active)))
+            .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" System Control Dashboard ").style(Style::default().fg(palette.border_active)))
             .style(Style::default().fg(palette.fg).add_modifier(Modifier::BOLD));
             f.render_widget(title, chunks[0]);
 
@@ -2970,7 +2974,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let account_table = Table::new(rows, widths)
                 .header(header)
-                .block(Block::default().borders(Borders::ALL).title(table_title).style(Style::default().fg(table_border_color)))
+                .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(table_title).style(Style::default().fg(table_border_color)))
                 .highlight_style(Style::default());
 
             let mut render_state = TableState::default();
@@ -2978,6 +2982,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 render_state.select(Some(2 * selected_idx));
             }
             f.render_stateful_widget(account_table, content_chunks[0], &mut render_state);
+
+            let total_rows = app.get_visible_accounts().len() * 2;
+            let current_pos = app.list_state.selected().unwrap_or(0) * 2;
+            let mut scrollbar_state = ScrollbarState::new(total_rows).position(current_pos);
+            let scrollbar = Scrollbar::default()
+                .orientation(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("▲"))
+                .end_symbol(Some("▼"));
+            f.render_stateful_widget(scrollbar, content_chunks[0], &mut scrollbar_state);
 
             if let Some(selected_acc) = app.get_selected_account() {
                 let email = &selected_acc.email;
@@ -3010,7 +3023,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ];
                 
                 let details_header = Paragraph::new(header_text)
-                    .block(Block::default().borders(Borders::ALL).title(" Account Profile ").style(Style::default().fg(palette.border_inactive)));
+                    .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Account Profile ").style(Style::default().fg(palette.border_inactive)));
                 f.render_widget(details_header, details_chunks[0]);
 
                 if app.is_loading {
@@ -3018,7 +3031,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "\n\n\n\n       ⏳  PROCESSING TRANSACTION...\n\n       Contacting Google Companion API and updating active session credentials.\n       Please wait, the interface will automatically refresh."
                     )
                     .alignment(ratatui::layout::Alignment::Center)
-                    .block(Block::default().borders(Borders::ALL).title(" Pending Action ").style(Style::default().fg(palette.border_active)));
+                    .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Pending Action ").style(Style::default().fg(palette.border_active)));
                     f.render_widget(loading_msg, details_chunks[1]);
                 } else if let Some(q) = quota_cache {
                     let mut quota_items = Vec::new();
@@ -3091,20 +3104,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let breakdown_border_color = if app.focused_panel == Focus::Breakdown { palette.border_active } else { palette.border_inactive };
                     let breakdown_title = if app.focused_panel == Focus::Breakdown { " Quotas Breakdown (Active Panel) " } else { " Quotas Breakdown " };
 
+                    let total_quotas = quota_items.len();
                     let quota_list = List::new(quota_items)
-                        .block(Block::default().borders(Borders::ALL).title(breakdown_title).style(Style::default().fg(breakdown_border_color)))
+                        .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(breakdown_title).style(Style::default().fg(breakdown_border_color)))
                         .highlight_style(Style::default().bg(palette.selection_bg).add_modifier(Modifier::BOLD));
                     f.render_stateful_widget(quota_list, details_chunks[1], &mut app.breakdown_state);
+
+                    let current_quota_pos = app.breakdown_state.selected().unwrap_or(0);
+                    let mut quota_scrollbar_state = ScrollbarState::new(total_quotas).position(current_quota_pos);
+                    let quota_scrollbar = Scrollbar::default()
+                        .orientation(ScrollbarOrientation::VerticalRight)
+                        .begin_symbol(Some("▲"))
+                        .end_symbol(Some("▼"));
+                    f.render_stateful_widget(quota_scrollbar, details_chunks[1], &mut quota_scrollbar_state);
                 } else {
                     let breakdown_border_color = if app.focused_panel == Focus::Breakdown { palette.border_active } else { palette.border_inactive };
                     let breakdown_title = if app.focused_panel == Focus::Breakdown { " Quotas Breakdown (Active Panel) " } else { " Quotas Breakdown " };
                     let empty_quota = Paragraph::new("\n No quota metrics cached in database. Press [r] to refresh active quotas.")
-                        .block(Block::default().borders(Borders::ALL).title(breakdown_title).style(Style::default().fg(breakdown_border_color)));
+                        .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(breakdown_title).style(Style::default().fg(breakdown_border_color)));
                     f.render_widget(empty_quota, details_chunks[1]);
                 }
             } else {
                 let fallback = Paragraph::new("\n Please select or configure an account first.")
-                    .block(Block::default().borders(Borders::ALL).title(" Profile Details ").style(Style::default().fg(palette.border_inactive)));
+                    .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Profile Details ").style(Style::default().fg(palette.border_inactive)));
                 f.render_widget(fallback, content_chunks[1]);
             }
 
@@ -3116,7 +3138,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "".to_string()
             };
             let status_block = Paragraph::new(format!("{}{}", loader_prefix, app.status_message))
-                .block(Block::default().borders(Borders::ALL).title(" Logger Console ").style(Style::default().fg(palette.green_success)))
+                .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Logger Console ").style(Style::default().fg(palette.green_success)))
                 .wrap(Wrap { trim: true });
             f.render_widget(status_block, chunks[2]);
 
@@ -3128,6 +3150,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let block = Block::default()
                     .title(" Keyboard Help Guide ")
                     .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
                     .style(Style::default().bg(palette.bg).fg(palette.border_active));
                 
                 let area = centered_rect(65, 58, f.size());
@@ -3139,7 +3162,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Line::from(vec![Span::raw("  Tab           Switch panel focus (Accounts Table <-> Quotas Breakdown)")]),
                     Line::from(vec![Span::raw("  j / Down      Select next item in active panel")]),
                     Line::from(vec![Span::raw("  k / Up        Select previous item in active panel")]),
-                    Line::from(vec![Span::raw("  s             Cycle table sorting (Email -> Gemini -> Claude -> 5h -> Weekly")]),
+                    Line::from(vec![Span::raw("  s             Cycle table sorting (Email -> Gemini 5h -> Gemini Wk -> Claude 5h -> Claude Wk")]),
                     Line::from(vec![Span::raw("  /             Search / Filter accounts by typing email address")]),
                     Line::from(vec![Span::raw("  c             Toggle Compact layout view (hides reset countdowns for tablet/portrait)")]),
                     Line::from(vec![Span::raw("  v             Open scrollable Session Logs History Explorer overlay")]),
@@ -3175,6 +3198,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let block = Block::default()
                     .title(" Add Custom Account ")
                     .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
                     .style(Style::default().bg(palette.bg).fg(palette.border_active));
                 
                 let area = centered_rect(65, 45, f.size());
@@ -3196,6 +3220,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let email_block = Block::default()
                     .title(" 1. Email Address ")
                     .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
                     .style(if *active_field == 0 { Style::default().fg(palette.yellow_warning) } else { Style::default().fg(palette.border_inactive) });
                 let email_para = Paragraph::new(email.as_str()).block(email_block);
                 f.render_widget(email_para, modal_chunks[0]);
@@ -3203,6 +3228,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let token_block = Block::default()
                     .title(" 2. OAuth Refresh Token ")
                     .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
                     .style(if *active_field == 1 { Style::default().fg(palette.yellow_warning) } else { Style::default().fg(palette.border_inactive) });
                 let token_para = Paragraph::new(refresh_token.as_str()).block(token_block);
                 f.render_widget(token_para, modal_chunks[1]);
@@ -3224,6 +3250,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let block = Block::default()
                     .title(" Google OAuth Authentication ")
                     .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
                     .style(Style::default().bg(palette.bg).fg(palette.border_active));
                 
                 let area = centered_rect(75, 55, f.size());
@@ -3247,6 +3274,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let url_block = Block::default()
                     .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
                     .title(" Copy & Paste URL ")
                     .style(Style::default().fg(palette.yellow_warning));
                 let url_para = Paragraph::new(auth_url.as_str())
@@ -3267,6 +3295,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let block = Block::default()
                     .title(" Delete Account Confirmation ")
                     .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
                     .style(Style::default().bg(palette.bg).fg(palette.red_danger));
                 
                 let area = centered_rect(50, 35, f.size());
@@ -3304,6 +3333,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let block = Block::default()
                     .title(" Session Logs History Explorer ")
                     .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
                     .style(Style::default().bg(palette.bg).fg(palette.border_active));
                 
                 let area = centered_rect(80, 70, f.size());
@@ -3315,13 +3345,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .constraints([
                         Constraint::Min(1),
                         Constraint::Length(1),
+                        Constraint::Length(1),
                     ])
                     .margin(2)
                     .split(area);
 
-                let log_items: Vec<ListItem> = app.log_history.iter().map(|log| {
+                let filtered_logs: Vec<&String> = app.log_history.iter().filter(|log| {
+                    if app.log_search_query.is_empty() {
+                        true
+                    } else {
+                        log.to_lowercase().contains(&app.log_search_query.to_lowercase())
+                    }
+                }).collect();
+
+                let log_items: Vec<ListItem> = filtered_logs.iter().map(|log| {
+                    let log_lower = log.to_lowercase();
+                    let log_style = if log_lower.contains("error") || log_lower.contains("failed") || log_lower.contains("fail") {
+                        Style::default().fg(palette.red_danger)
+                    } else if log_lower.contains("warn") || log_lower.contains("warning") {
+                        Style::default().fg(palette.yellow_warning)
+                    } else if log_lower.contains("success") || log_lower.contains("activated") || log_lower.contains("active") {
+                        Style::default().fg(palette.green_success)
+                    } else if log_lower.contains("info") {
+                        Style::default().fg(palette.border_active)
+                    } else {
+                        Style::default().fg(palette.fg)
+                    };
                     ListItem::new(Line::from(vec![
-                        Span::raw(log.clone())
+                        Span::styled((*log).clone(), log_style)
                     ]))
                 }).collect();
 
@@ -3329,15 +3380,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .highlight_style(Style::default().bg(palette.selection_bg).add_modifier(Modifier::BOLD));
                 f.render_stateful_widget(list_widget, list_chunks[0], &mut app.log_state);
 
+                let total_logs = filtered_logs.len();
+                let current_log_pos = app.log_state.selected().unwrap_or(0);
+                let mut log_scrollbar_state = ScrollbarState::new(total_logs).position(current_log_pos);
+                let log_scrollbar = Scrollbar::default()
+                    .orientation(ScrollbarOrientation::VerticalRight)
+                    .begin_symbol(Some("▲"))
+                    .end_symbol(Some("▼"));
+                f.render_stateful_widget(log_scrollbar, list_chunks[0], &mut log_scrollbar_state);
+
+                let search_text = if app.is_searching_logs {
+                    format!(" 🔍 Filter: {}_", app.log_search_query)
+                } else if !app.log_search_query.is_empty() {
+                    format!(" 🔍 Filter: {} (Press [/] to edit, [Esc] to clear)", app.log_search_query)
+                } else {
+                    " Press [/] to filter logs".to_string()
+                };
+                let search_bar = Paragraph::new(search_text)
+                    .style(Style::default().fg(palette.yellow_warning));
+                f.render_widget(search_bar, list_chunks[1]);
+
                 let tips = Paragraph::new(" [Esc/q/v] Close Logs Explorer  |  [j/k, Up/Down] Scroll History")
                     .style(Style::default().fg(palette.border_inactive));
-                f.render_widget(tips, list_chunks[1]);
+                f.render_widget(tips, list_chunks[2]);
             }
 
             if app.show_theme_selector {
                 let block = Block::default()
                     .title(" 🎨 Select Color Theme ")
                     .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
                     .style(Style::default().bg(palette.bg).fg(palette.border_active));
                 
                 let area = centered_rect(60, 50, f.size());
@@ -3357,6 +3429,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let search_block = Block::default()
                     .title(" 🔍 Search Palette Name ")
                     .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
                     .style(Style::default().fg(palette.yellow_warning));
                 let search_para = Paragraph::new(format!("{}_", app.theme_search_query)).block(search_block);
                 f.render_widget(search_para, list_chunks[0]);
@@ -3371,9 +3444,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }).collect();
 
                 let list_widget = List::new(theme_items)
-                    .block(Block::default().borders(Borders::ALL).title(" Palette Presets ").style(Style::default().fg(palette.border_inactive)))
+                    .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Palette Presets ").style(Style::default().fg(palette.border_inactive)))
                     .highlight_style(Style::default().bg(palette.selection_bg).add_modifier(Modifier::BOLD));
                 f.render_stateful_widget(list_widget, list_chunks[1], &mut app.theme_list_state);
+
+                let total_themes = visible_themes.len();
+                let current_theme_pos = app.theme_list_state.selected().unwrap_or(0);
+                let mut theme_scrollbar_state = ScrollbarState::new(total_themes).position(current_theme_pos);
+                let theme_scrollbar = Scrollbar::default()
+                    .orientation(ScrollbarOrientation::VerticalRight)
+                    .begin_symbol(Some("▲"))
+                    .end_symbol(Some("▼"));
+                f.render_stateful_widget(theme_scrollbar, list_chunks[1], &mut theme_scrollbar_state);
 
                 let tips = Paragraph::new(" [Esc/q/t] Cancel  |  [Enter] Select Theme  |  [j/k, Up/Down] Select preset")
                     .style(Style::default().fg(palette.border_inactive));
@@ -3642,42 +3724,90 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
 
                     if app.show_logs {
-                        match key.code {
-                            KeyCode::Char('v') | KeyCode::Char('V') | KeyCode::Char('q') | KeyCode::Esc => {
-                                app.show_logs = false;
-                                app.set_status("Closed session logs explorer.");
-                            }
-                            KeyCode::Down | KeyCode::Char('j') => {
-                                if !app.log_history.is_empty() {
-                                    let i = match app.log_state.selected() {
-                                        Some(i) => {
-                                            if i >= app.log_history.len() - 1 {
-                                                0
-                                            } else {
-                                                i + 1
-                                            }
-                                        }
-                                        None => 0,
-                                    };
-                                    app.log_state.select(Some(i));
+                        if app.is_searching_logs {
+                            match key.code {
+                                KeyCode::Esc => {
+                                    app.is_searching_logs = false;
+                                    app.log_search_query.clear();
+                                    app.log_state.select(Some(0));
+                                    app.set_status("Logs filter cleared.");
                                 }
-                            }
-                            KeyCode::Up | KeyCode::Char('k') => {
-                                if !app.log_history.is_empty() {
-                                    let i = match app.log_state.selected() {
-                                        Some(i) => {
-                                            if i == 0 {
-                                                app.log_history.len() - 1
-                                            } else {
-                                                i - 1
-                                            }
-                                        }
-                                        None => 0,
-                                    };
-                                    app.log_state.select(Some(i));
+                                KeyCode::Enter => {
+                                    app.is_searching_logs = false;
+                                    app.set_status(&format!("Locked logs filter: {}", app.log_search_query));
                                 }
+                                KeyCode::Backspace => {
+                                    app.log_search_query.pop();
+                                    app.log_state.select(Some(0));
+                                }
+                                KeyCode::Char(c) => {
+                                    app.log_search_query.push(c);
+                                    app.log_state.select(Some(0));
+                                }
+                                _ => {}
                             }
-                            _ => {}
+                        } else {
+                            match key.code {
+                                KeyCode::Char('v') | KeyCode::Char('V') | KeyCode::Char('q') | KeyCode::Esc => {
+                                    app.show_logs = false;
+                                    app.log_search_query.clear();
+                                    app.is_searching_logs = false;
+                                    app.set_status("Closed session logs explorer.");
+                                }
+                                KeyCode::Char('/') => {
+                                    app.is_searching_logs = true;
+                                    app.log_search_query.clear();
+                                    app.log_state.select(Some(0));
+                                    app.set_status("Log Filter: Type query. Press Enter to lock, Esc to clear.");
+                                }
+                                KeyCode::Down | KeyCode::Char('j') => {
+                                    let total_len = app.log_history.iter().filter(|log| {
+                                        if app.log_search_query.is_empty() {
+                                            true
+                                        } else {
+                                            log.to_lowercase().contains(&app.log_search_query.to_lowercase())
+                                        }
+                                    }).count();
+
+                                    if total_len > 0 {
+                                        let i = match app.log_state.selected() {
+                                            Some(i) => {
+                                                if i >= total_len - 1 {
+                                                    0
+                                                } else {
+                                                    i + 1
+                                                }
+                                            }
+                                            None => 0,
+                                        };
+                                        app.log_state.select(Some(i));
+                                    }
+                                }
+                                KeyCode::Up | KeyCode::Char('k') => {
+                                    let total_len = app.log_history.iter().filter(|log| {
+                                        if app.log_search_query.is_empty() {
+                                            true
+                                        } else {
+                                            log.to_lowercase().contains(&app.log_search_query.to_lowercase())
+                                        }
+                                    }).count();
+
+                                    if total_len > 0 {
+                                        let i = match app.log_state.selected() {
+                                            Some(i) => {
+                                                if i == 0 {
+                                                    total_len - 1
+                                                } else {
+                                                    i - 1
+                                                }
+                                            }
+                                            None => 0,
+                                        };
+                                        app.log_state.select(Some(i));
+                                    }
+                                }
+                                _ => {}
+                            }
                         }
                         continue;
                     }
