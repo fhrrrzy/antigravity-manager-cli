@@ -590,6 +590,76 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
                         Span::styled(weekly_reset_str, Style::default().fg(palette.violet_reset_weekly)),
                     ])));
                 }
+
+                // Add separator divider line
+                quota_items.push(ListItem::new(Line::from(vec![
+                    Span::styled("─── ", Style::default().fg(palette.border_inactive)),
+                    Span::styled("Detailed Model Breakdowns", Style::default().fg(palette.border_active).add_modifier(Modifier::BOLD)),
+                    Span::styled(" ──────────────────────────────────────────────────────────", Style::default().fg(palette.border_inactive)),
+                ])));
+
+                // Add detailed individual models list
+                let mut sorted_models = q.models.clone();
+                sorted_models.sort_by(|a, b| {
+                    let a_is_claude = a.name.contains("claude");
+                    let b_is_claude = b.name.contains("claude");
+                    match (a_is_claude, b_is_claude) {
+                        (true, false) => std::cmp::Ordering::Greater,
+                        (false, true) => std::cmp::Ordering::Less,
+                        _ => a.name.cmp(&b.name),
+                    }
+                });
+
+                for m in sorted_models {
+                    let name = &m.name;
+                    let display = m.display_name.as_deref().unwrap_or(name);
+                    let pct = m.percentage;
+                    
+                    let bar_color = if pct >= 80 {
+                        palette.green_success
+                    } else if pct >= 30 {
+                        palette.yellow_warning
+                    } else {
+                        palette.red_danger
+                    };
+
+                    let bar_width = 15;
+                    let filled = ((pct as f64 / 100.0) * bar_width as f64).round() as usize;
+                    let empty = bar_width - filled;
+                    let bar_str = format!(
+                        "[{}{}] {:>3}%",
+                        "█".repeat(filled),
+                        "░".repeat(empty),
+                        pct
+                    );
+
+                    let history_key = format!("{}:{}:100", email, name);
+                    let mut cooldown_str = String::new();
+                    if let Some(&last_ts) = app.warmup_history.get(&history_key) {
+                        let elapsed = chrono::Utc::now().timestamp() - last_ts;
+                        if elapsed < COOLDOWN_SECONDS {
+                            let rem = COOLDOWN_SECONDS - elapsed;
+                            let h = rem / 3600;
+                            let min = (rem % 3600) / 60;
+                            let local_reset = chrono::Local::now() + chrono::Duration::seconds(rem);
+                            cooldown_str = format!(" [Cooldown: {}h {}m (Resets at {})]", h, min, local_reset.format("%H:%M"));
+                        }
+                    }
+
+                    let mut reset_str = String::new();
+                    if !m.reset_time.is_empty() {
+                        if let Some(cd) = format_countdown(&m.reset_time) {
+                            reset_str = format!(" [Reset in: {}]", cd);
+                        }
+                    }
+
+                    quota_items.push(ListItem::new(Line::from(vec![
+                        Span::styled(format!("{:<28}", display), Style::default().fg(palette.fg)),
+                        Span::styled(bar_str, Style::default().fg(bar_color)),
+                        Span::styled(cooldown_str, Style::default().fg(palette.border_inactive)),
+                        Span::styled(reset_str, Style::default().fg(palette.blue_reset_5h)),
+                    ])));
+                }
             }
 
             let breakdown_border_color = if app.focused_panel == Focus::Breakdown { palette.border_active } else { palette.border_inactive };
