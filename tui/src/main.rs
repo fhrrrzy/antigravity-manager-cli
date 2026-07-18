@@ -90,6 +90,10 @@ enum ThemeType {
     OneDark,
     RetroMatrix,
     SolarizedDark,
+    Catppuccin,
+    RosePine,
+    TokyoNight,
+    AyuDark,
 }
 
 impl ThemeType {
@@ -101,6 +105,10 @@ impl ThemeType {
             "one dark" | "onedark" => ThemeType::OneDark,
             "retro matrix" | "matrix" => ThemeType::RetroMatrix,
             "solarized dark" | "solarized" => ThemeType::SolarizedDark,
+            "catppuccin" | "catppuccin macchiato" => ThemeType::Catppuccin,
+            "rose pine" | "rosepine" => ThemeType::RosePine,
+            "tokyo night" | "tokyonight" => ThemeType::TokyoNight,
+            "ayu dark" | "ayudark" => ThemeType::AyuDark,
             _ => ThemeType::KanagawaDragon,
         }
     }
@@ -114,6 +122,10 @@ impl ThemeType {
             ThemeType::OneDark => "One Dark",
             ThemeType::RetroMatrix => "Retro Matrix",
             ThemeType::SolarizedDark => "Solarized Dark",
+            ThemeType::Catppuccin => "Catppuccin",
+            ThemeType::RosePine => "Rose Pine",
+            ThemeType::TokyoNight => "Tokyo Night",
+            ThemeType::AyuDark => "Ayu Dark",
         }
     }
 
@@ -209,6 +221,58 @@ impl ThemeType {
                 red_danger: Color::Rgb(220, 50, 47),
                 blue_reset_5h: Color::Rgb(42, 161, 152),
                 violet_reset_weekly: Color::Rgb(108, 113, 196),
+            },
+            ThemeType::Catppuccin => ThemePalette {
+                name: "Catppuccin",
+                bg: Color::Rgb(36, 39, 58),
+                fg: Color::Rgb(202, 211, 245),
+                border_active: Color::Rgb(198, 160, 246),
+                border_inactive: Color::Rgb(91, 96, 120),
+                selection_bg: Color::Rgb(54, 58, 79),
+                green_success: Color::Rgb(166, 218, 149),
+                yellow_warning: Color::Rgb(238, 212, 159),
+                red_danger: Color::Rgb(237, 135, 150),
+                blue_reset_5h: Color::Rgb(139, 213, 202),
+                violet_reset_weekly: Color::Rgb(245, 189, 230),
+            },
+            ThemeType::RosePine => ThemePalette {
+                name: "Rose Pine",
+                bg: Color::Rgb(25, 23, 36),
+                fg: Color::Rgb(224, 222, 244),
+                border_active: Color::Rgb(196, 167, 231),
+                border_inactive: Color::Rgb(85, 81, 105),
+                selection_bg: Color::Rgb(42, 40, 55),
+                green_success: Color::Rgb(156, 207, 216),
+                yellow_warning: Color::Rgb(246, 193, 119),
+                red_danger: Color::Rgb(235, 188, 186),
+                blue_reset_5h: Color::Rgb(156, 207, 216),
+                violet_reset_weekly: Color::Rgb(196, 167, 231),
+            },
+            ThemeType::TokyoNight => ThemePalette {
+                name: "Tokyo Night",
+                bg: Color::Rgb(36, 40, 59),
+                fg: Color::Rgb(192, 202, 245),
+                border_active: Color::Rgb(122, 162, 247),
+                border_inactive: Color::Rgb(86, 95, 137),
+                selection_bg: Color::Rgb(47, 53, 79),
+                green_success: Color::Rgb(158, 206, 106),
+                yellow_warning: Color::Rgb(224, 175, 104),
+                red_danger: Color::Rgb(247, 118, 142),
+                blue_reset_5h: Color::Rgb(13, 185, 215),
+                violet_reset_weekly: Color::Rgb(187, 154, 247),
+            },
+            ThemeType::AyuDark => ThemePalette {
+                name: "Ayu Dark",
+                bg: Color::Rgb(15, 20, 25),
+                fg: Color::Rgb(230, 180, 80),
+                border_active: Color::Rgb(255, 180, 84),
+                border_inactive: Color::Rgb(62, 75, 89),
+                selection_bg: Color::Rgb(36, 51, 64),
+                green_success: Color::Rgb(127, 217, 98),
+                yellow_warning: Color::Rgb(242, 151, 24),
+                red_danger: Color::Rgb(240, 113, 120),
+                blue_reset_5h: Color::Rgb(57, 186, 230),
+                violet_reset_weekly: Color::Rgb(242, 89, 75),
             },
         }
     }
@@ -420,6 +484,10 @@ impl App {
             ThemeType::OneDark,
             ThemeType::RetroMatrix,
             ThemeType::SolarizedDark,
+            ThemeType::Catppuccin,
+            ThemeType::RosePine,
+            ThemeType::TokyoNight,
+            ThemeType::AyuDark,
         ];
         if self.theme_search_query.is_empty() {
             all_themes
@@ -2739,7 +2807,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let is_highlight_active = app.active_email.as_ref() == Some(email);
                 let status_span = if is_highlight_active {
-                    Span::styled(" ★ ACTIVE SESSION ", Style::default().bg(palette.green_success).fg(Color::Black).add_modifier(Modifier::BOLD))
+                    Span::styled(" ★ ACTIVE SESSION ", Style::default().bg(palette.green_success).fg(palette.bg).add_modifier(Modifier::BOLD))
                 } else {
                     Span::styled(" ○ INACTIVE ", Style::default().fg(palette.border_inactive))
                 };
@@ -2822,23 +2890,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
 
                             quota_items.push(ListItem::new(Line::from(vec![
-                                Span::styled(format!("{:<28}", display), Style::default().fg(Color::White)),
+                                Span::styled(format!("{:<28}", display), Style::default().fg(palette.fg)),
                                 Span::styled(bar_str, Style::default().fg(bar_color)),
-                                Span::styled(cooldown_str, Style::default().fg(Color::Rgb(114, 114, 114))),
-                                Span::styled(reset_str, Style::default().fg(Color::Rgb(139, 164, 177))),
+                                Span::styled(cooldown_str, Style::default().fg(palette.border_inactive)),
+                                Span::styled(reset_str, Style::default().fg(palette.blue_reset_5h)),
                             ])));
                         }
                     }
 
-                    let breakdown_border_color = if app.focused_panel == Focus::Breakdown { Color::Rgb(196, 178, 138) } else { Color::Rgb(84, 84, 96) };
+                    let breakdown_border_color = if app.focused_panel == Focus::Breakdown { palette.border_active } else { palette.border_inactive };
                     let breakdown_title = if app.focused_panel == Focus::Breakdown { " Quotas Breakdown (Active Panel) " } else { " Quotas Breakdown " };
 
                     let quota_list = List::new(quota_items)
                         .block(Block::default().borders(Borders::ALL).title(breakdown_title).style(Style::default().fg(breakdown_border_color)))
-                        .highlight_style(Style::default().bg(Color::Rgb(42, 42, 53)).add_modifier(Modifier::BOLD));
+                        .highlight_style(Style::default().bg(palette.selection_bg).add_modifier(Modifier::BOLD));
                     f.render_stateful_widget(quota_list, details_chunks[1], &mut app.breakdown_state);
                 } else {
-                    let breakdown_border_color = if app.focused_panel == Focus::Breakdown { Color::Rgb(196, 178, 138) } else { Color::Rgb(84, 84, 96) };
+                    let breakdown_border_color = if app.focused_panel == Focus::Breakdown { palette.border_active } else { palette.border_inactive };
                     let breakdown_title = if app.focused_panel == Focus::Breakdown { " Quotas Breakdown (Active Panel) " } else { " Quotas Breakdown " };
                     let empty_quota = Paragraph::new("\n No quota metrics cached in database. Press [r] to refresh active quotas.")
                         .block(Block::default().borders(Borders::ALL).title(breakdown_title).style(Style::default().fg(breakdown_border_color)));
@@ -2846,7 +2914,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             } else {
                 let fallback = Paragraph::new("\n Please select or configure an account first.")
-                    .block(Block::default().borders(Borders::ALL).title(" Profile Details ").style(Style::default().fg(Color::Rgb(84, 84, 96))));
+                    .block(Block::default().borders(Borders::ALL).title(" Profile Details ").style(Style::default().fg(palette.border_inactive)));
                 f.render_widget(fallback, content_chunks[1]);
             }
 
@@ -2870,14 +2938,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let block = Block::default()
                     .title(" Keyboard Help Guide ")
                     .borders(Borders::ALL)
-                    .style(Style::default().bg(Color::Rgb(20, 20, 35)).fg(Color::Rgb(122, 168, 159)));
+                    .style(Style::default().bg(palette.bg).fg(palette.border_active));
                 
                 let area = centered_rect(65, 58, f.size());
                 f.render_widget(Clear, area);
                 f.render_widget(block, area);
 
                 let help_text = vec![
-                    Line::from(vec![Span::styled("Navigation & Layout:", Style::default().fg(Color::Rgb(196, 178, 138)).add_modifier(Modifier::BOLD))]),
+                    Line::from(vec![Span::styled("Navigation & Layout:", Style::default().fg(palette.yellow_warning).add_modifier(Modifier::BOLD))]),
                     Line::from(vec![Span::raw("  Tab           Switch panel focus (Accounts Table <-> Quotas Breakdown)")]),
                     Line::from(vec![Span::raw("  j / Down      Select next item in active panel")]),
                     Line::from(vec![Span::raw("  k / Up        Select previous item in active panel")]),
@@ -2887,19 +2955,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Line::from(vec![Span::raw("  v             Open scrollable Session Logs History Explorer overlay")]),
                     Line::from(vec![Span::raw("  Enter         Activate/Switch session to selected account")]),
                     Line::from(vec![Span::raw("")]),
-                    Line::from(vec![Span::styled("Quota & Session actions:", Style::default().fg(Color::Rgb(196, 178, 138)).add_modifier(Modifier::BOLD))]),
+                    Line::from(vec![Span::styled("Quota & Session actions:", Style::default().fg(palette.yellow_warning).add_modifier(Modifier::BOLD))]),
                     Line::from(vec![Span::raw("  r             Refresh selected account's Google API quotas")]),
                     Line::from(vec![Span::raw("  R             Batch refresh ALL accounts' quotas (asynchronously)")]),
                     Line::from(vec![Span::raw("  w             Trigger smart warm up sequence for selected account")]),
                     Line::from(vec![Span::raw("  W             Trigger smart warm up sequence for ALL accounts")]),
                     Line::from(vec![Span::raw("  f             Force warm up selected account (ignores cooldowns)")]),
                     Line::from(vec![Span::raw("")]),
-                    Line::from(vec![Span::styled("Account Management:", Style::default().fg(Color::Rgb(196, 178, 138)).add_modifier(Modifier::BOLD))]),
+                    Line::from(vec![Span::styled("Account Management:", Style::default().fg(palette.yellow_warning).add_modifier(Modifier::BOLD))]),
                     Line::from(vec![Span::raw("  a             Add custom account with manual refresh token")]),
                     Line::from(vec![Span::raw("  l             Login via Google OAuth browser integration link")]),
                     Line::from(vec![Span::raw("  d / Backspace Open account deletion confirmation prompt")]),
                     Line::from(vec![Span::raw("")]),
-                    Line::from(vec![Span::styled("Press [h], [Esc] or [q] to close this help guide", Style::default().fg(Color::Rgb(138, 154, 134)))]),
+                    Line::from(vec![Span::styled("Press [h], [Esc] or [q] to close this help guide", Style::default().fg(palette.green_success))]),
                 ];
 
                 let help_para = Paragraph::new(help_text)
@@ -2916,7 +2984,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let block = Block::default()
                     .title(" Add Custom Account ")
                     .borders(Borders::ALL)
-                    .style(Style::default().bg(Color::Rgb(20, 20, 30)).fg(Color::Cyan));
+                    .style(Style::default().bg(palette.bg).fg(palette.border_active));
                 
                 let area = centered_rect(65, 45, f.size());
                 f.render_widget(Clear, area);
@@ -2937,27 +3005,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let email_block = Block::default()
                     .title(" 1. Email Address ")
                     .borders(Borders::ALL)
-                    .style(if *active_field == 0 { Style::default().fg(Color::Yellow) } else { Style::default().fg(Color::DarkGray) });
+                    .style(if *active_field == 0 { Style::default().fg(palette.yellow_warning) } else { Style::default().fg(palette.border_inactive) });
                 let email_para = Paragraph::new(email.as_str()).block(email_block);
                 f.render_widget(email_para, modal_chunks[0]);
 
                 let token_block = Block::default()
                     .title(" 2. OAuth Refresh Token ")
                     .borders(Borders::ALL)
-                    .style(if *active_field == 1 { Style::default().fg(Color::Yellow) } else { Style::default().fg(Color::DarkGray) });
+                    .style(if *active_field == 1 { Style::default().fg(palette.yellow_warning) } else { Style::default().fg(palette.border_inactive) });
                 let token_para = Paragraph::new(refresh_token.as_str()).block(token_block);
                 f.render_widget(token_para, modal_chunks[1]);
 
                 if let Some(err) = error_message {
                     let err_para = Paragraph::new(format!("Error: {}", err))
-                        .style(Style::default().fg(Color::Rgb(220, 50, 50)).add_modifier(Modifier::BOLD));
+                        .style(Style::default().fg(palette.red_danger).add_modifier(Modifier::BOLD));
                     f.render_widget(err_para, modal_chunks[2]);
                 }
 
                 let help_text = Paragraph::new(
                     " [Tab] Switch Fields  |  [Enter] Verify & Add Account  |  [Esc] Cancel Modal\n (The refresh token will be validated with Google prior to saving.)"
                 )
-                .style(Style::default().fg(Color::DarkGray));
+                .style(Style::default().fg(palette.border_inactive));
                 f.render_widget(help_text, modal_chunks[3]);
             }
 
@@ -2965,7 +3033,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let block = Block::default()
                     .title(" Google OAuth Authentication ")
                     .borders(Borders::ALL)
-                    .style(Style::default().bg(Color::Rgb(20, 20, 30)).fg(Color::Cyan));
+                    .style(Style::default().bg(palette.bg).fg(palette.border_active));
                 
                 let area = centered_rect(75, 55, f.size());
                 f.render_widget(Clear, area);
@@ -2989,18 +3057,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let url_block = Block::default()
                     .borders(Borders::ALL)
                     .title(" Copy & Paste URL ")
-                    .style(Style::default().fg(Color::Yellow));
+                    .style(Style::default().fg(palette.yellow_warning));
                 let url_para = Paragraph::new(auth_url.as_str())
                     .block(url_block)
                     .wrap(Wrap { trim: false });
                 f.render_widget(url_para, modal_chunks[1]);
 
                 let status_desc = Paragraph::new("Status: Awaiting authorization callback from Google loopback listener...")
-                    .style(Style::default().fg(Color::Rgb(50, 180, 240)).add_modifier(Modifier::BOLD));
+                    .style(Style::default().fg(palette.blue_reset_5h).add_modifier(Modifier::BOLD));
                 f.render_widget(status_desc, modal_chunks[2]);
 
                 let footer_help = Paragraph::new(" [Esc] Cancel OAuth Login Session\n Listening on local loopback TCP port 14210.")
-                    .style(Style::default().fg(Color::DarkGray));
+                    .style(Style::default().fg(palette.border_inactive));
                 f.render_widget(footer_help, modal_chunks[3]);
             }
 
@@ -3008,7 +3076,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let block = Block::default()
                     .title(" Delete Account Confirmation ")
                     .borders(Borders::ALL)
-                    .style(Style::default().bg(Color::Rgb(25, 20, 20)).fg(Color::Rgb(220, 50, 50)));
+                    .style(Style::default().bg(palette.bg).fg(palette.red_danger));
                 
                 let area = centered_rect(50, 35, f.size());
                 f.render_widget(Clear, area);
@@ -3029,15 +3097,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     email
                 ))
                 .wrap(Wrap { trim: true })
-                .style(Style::default().fg(Color::White));
+                .style(Style::default().fg(palette.fg));
                 f.render_widget(warn_desc, modal_chunks[0]);
 
                 let alert = Paragraph::new("This action cannot be undone and will delete the account file!")
-                    .style(Style::default().fg(Color::Rgb(220, 50, 50)).add_modifier(Modifier::BOLD));
+                    .style(Style::default().fg(palette.red_danger).add_modifier(Modifier::BOLD));
                 f.render_widget(alert, modal_chunks[1]);
 
                 let prompt = Paragraph::new(" [y] Yes, Delete Account  |  [n] No, Cancel (Esc)")
-                    .style(Style::default().fg(Color::DarkGray));
+                    .style(Style::default().fg(palette.border_inactive));
                 f.render_widget(prompt, modal_chunks[2]);
             }
 
