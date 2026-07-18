@@ -53,6 +53,8 @@ pub struct App {
     pub show_sort_menu: bool,
     pub sort_menu_state: ListState,
     pub privacy_mode: bool,
+    pub fx_manager: tachyonfx::EffectManager<()>,
+    pub last_tick_time: Instant,
 }
 
 impl App {
@@ -124,6 +126,8 @@ impl App {
                 s
             },
             privacy_mode: false,
+            fx_manager: tachyonfx::EffectManager::default(),
+            last_tick_time: Instant::now(),
         };
         app.sort_accounts();
         app
@@ -134,6 +138,14 @@ impl App {
         self.status_message = formatted.clone();
         self.status_timestamp = Some(Instant::now());
         self.log_history.push(formatted);
+
+        // Flash/glow the status bar using a ping-pong color fade animation
+        let effect = tachyonfx::fx::ping_pong(tachyonfx::fx::fade_to_fg(
+            (0, 255, 255), // Cyan in RGB format
+            (std::time::Duration::from_millis(300), tachyonfx::Interpolation::SineInOut)
+        ));
+        self.fx_manager.add_effect(effect);
+
         if self.log_history.len() > 1000 {
             self.log_history.remove(0);
         }

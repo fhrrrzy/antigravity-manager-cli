@@ -949,4 +949,13 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
             .style(Style::default().fg(palette.border_inactive));
         f.render_widget(tips, list_chunks[1]);
     }
+
+    // Process TachyonFX animations on the Logger Console status bar chunk
+    let elapsed = app.last_tick_time.elapsed().as_millis() as u64;
+    app.last_tick_time = std::time::Instant::now();
+    app.fx_manager.process_effects(
+        std::time::Duration::from_millis(elapsed),
+        f.buffer_mut(),
+        chunks[2].into()
+    );
 }

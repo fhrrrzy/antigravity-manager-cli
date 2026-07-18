@@ -247,7 +247,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tx = event_tx.clone();
     tokio::spawn(async move {
         loop {
-            if event::poll(Duration::from_millis(200)).unwrap() {
+            if event::poll(Duration::from_millis(30)).unwrap() {
                 match event::read().unwrap() {
                     CEvent::Key(key) => {
                         let _ = tx.send(AppEvent::Key(key));
@@ -1054,7 +1054,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 AppEvent::Mouse(mouse) => {
                     if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
-                        let size = terminal.size().unwrap_or_default();
+                        let size: ratatui::layout::Rect = terminal.size().unwrap_or_default().into();
                         let modal_active = app.show_theme_selector 
                             || app.show_help 
                             || app.show_logs 
