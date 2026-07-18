@@ -1,108 +1,158 @@
-# 🚀 Antigravity Manager Tool (`agm-tui`)
+# Antigravity Manager CLI (`agm`)
 
-A unified, 100% Rust-based tool for managing accounts, tracking quotas, and warming up models for the Antigravity system. 
+A high-performance command-line utility and terminal user interface (TUI) written in Rust to manage accounts, monitor Google Companion API quotas, and coordinate smart session warmups for the Antigravity system. 
 
-It runs in two modes:
-1. **Interactive TUI Mode (Default)**: A terminal user interface built with `ratatui` for mobile tablet environments (Termux) and general command lines.
-2. **Command Line Mode (CLI)**: Runs specific subcommands directly from the command line for fast scripting or quick queries.
+It provides seamless integration for developer workflows, supporting both an interactive dashboard for manual operations and a scriptable CLI for background automation.
 
 ---
 
-## ⚡ Features
-
-- **Keyring & Active Sync**: Switch active accounts instantly. Writes credentials directly to your system keyring (keychain / Linux secret service) so Cursor/IDE integrations pick it up automatically.
-- **Visual Quota Tracking**: Displays remaining percentages and reset times. The TUI features hue-shifting visual progress bars (Green 🟢, Yellow 🟡, Red 🔴).
-- **Smart Model Warm Up**: Scans for cooled down models (100% quota) and fires warmup requests, respecting a **4-hour cooldown** stored inside `~/.antigravity_tools/warmup_history.json`.
-- **Asynchronous Execution**: In TUI mode, network operations run in background worker threads so the interface remains completely responsive.
-
----
-
-## 📦 Accounts Database Setup
-
-By default, the tool reads accounts from a backup JSON file containing emails and refresh tokens:
-- **Linux Default Path**: `/home/fhrrrzy/Downloads/antigravity_accounts_2026-07-17.json`
-- **Termux Default Path**: `~/.antigravity_tools/antigravity_accounts_2026-07-17.json`
-
-If the backup file is not found, the tool automatically falls back to loading configured accounts from the Tauri desktop directory (`~/.antigravity_tools/accounts.json` and `accounts/{id}.json`).
+## Table of Contents
+- [About the Project](#about-the-project)
+- [Key Features](#key-features)
+- [Getting Started](#getting-started)
+  - [Prerequisites](#prerequisites)
+  - [Installation and Setup](#installation-and-setup)
+- [Usage](#usage)
+  - [TUI Mode](#tui-mode)
+  - [CLI Mode](#cli-mode)
+- [Configuration and Database](#configuration-and-database)
+- [Acknowledgments](#acknowledgments)
+- [License](#license)
 
 ---
 
-## 🔧 Installation & Build Instructions
+## About the Project
 
-### 1. Prerequisites
-Ensure you have Rust, cargo, and git installed:
+This utility acts as a central control plane for managing account pools utilized by the Antigravity CLI and IDE companion tools. By interfacing directly with Google's backend APIs, it checks usage quotas, rotates credentials into system keyrings, and schedules model warmups to maintain uninterrupted access.
+
+---
+
+## Key Features
+
+- **System Keyring Integration**: Instantly switch the active developer session. Credentials are automatically written to your system's keyring (Linux Secret Service, macOS Keychain) and exported to workspace token files for IDE integration.
+- **Interactive TUI Dashboard**: Built with `ratatui` for responsive navigation, visual quota progression bars, and interactive logging history overlays.
+- **Flexible Sorting**: Sort your account pool by email, Gemini 5h/weekly quotas, or Claude 5h/weekly quotas. Accessible via column-header clicks or a dedicated keyboard sorting menu.
+- **Background Async Worker Pool**: Operations (e.g., token refreshes, network calls, warmup requests) run concurrently in background tokio tasks to keep the interface completely smooth and non-blocking.
+- **Smart Cooldown Warmup**: Automates model warmup triggers for exhausted/cooled-down slots while enforcing a strict 4-hour safety cooldown per model.
+- **Backup & Restore**: Create and restore local JSON database snapshots directly from the TUI or command line.
+
+---
+
+## Getting Started
+
+### Prerequisites
+
+#### Linux (Ubuntu/Debian)
 ```bash
-# On Linux (Ubuntu/Debian)
 sudo apt update && sudo apt install git build-essential -y
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
 
-# On Android (Termux)
+#### Android (Termux)
+```bash
 pkg update && pkg install git rust clang -y
 ```
 
-### 2. Compile from Source
-```bash
-# Clone the repository
-git clone git@github.com:fhrrrzy/antigravity-manager-cli.git ~/antigravity-manager-cli
+### Installation and Setup
 
-# Navigate to the project folder
-cd ~/antigravity-manager-cli
+1. **Clone the Repository**:
+   ```bash
+   git clone git@github.com:fhrrrzy/antigravity-manager-cli.git ~/antigravity-manager-cli
+   cd ~/antigravity-manager-cli
+   ```
 
-# Build the optimized release binary
-cargo build --release
-```
-
-### 3. Create a Global Shortcut
-Create a symlink to run the tool easily as `agm` from any directory:
-
-```bash
-# On Desktop Linux
-sudo ln -sf ~/antigravity-manager-cli/target/release/antigravity-tui /usr/local/bin/agm
-
-# On Android Termux
-ln -sf ~/antigravity-manager-cli/target/release/antigravity-tui /data/data/com.termux/files/usr/bin/agm
-```
+2. **Run the Installer**:
+   An installer script is provided to compile the optimized binary and register the path with your shell profiles:
+   ```bash
+   ./install.sh
+   ```
+   *Note: On Termux, the binary is copied directly to `$PREFIX/bin/agm`. On Desktop Linux/macOS, it is placed in `~/.local/bin/agm` and appended to your active shell configuration (`.bashrc`, `.zshrc`, etc.) if not already present.*
 
 ---
 
-## 💻 CLI Mode Usage
+## Usage
 
-Run `agm <command>` to execute actions directly:
+### TUI Mode
 
-```bash
-# 1. List configured accounts
-agm list
-
-# 2. Switch the active account (by index number or email address)
-agm switch 3
-agm switch fahrurrozy4220@gmail.com
-
-# 3. View quotas (cached)
-agm quota
-
-# 4. Refresh and view quotas from Google APIs
-agm quota --refresh
-
-# 5. Smart warmup cycle
-agm warmup
-
-# 6. Force-warm up a specific model
-agm warmup --model gemini-3-flash --force
-```
-
----
-
-## 📱 Interactive TUI Mode Usage
-
-Launch the GUI by running the tool with no arguments:
+Launch the TUI interface by running the utility with no arguments:
 ```bash
 agm
 ```
 
-### Keybindings Guide
-- **`↑` / `↓` (or `k` / `j`)**: Scroll through the account list.
-- **`Enter`**: Activate the highlighted account (switches active state and writes credentials).
-- **`r`**: Refresh quota metrics from Google companion APIs.
-- **`w`**: Run a smart Warm Up cycle for the highlighted account.
-- **`f`**: Force warm up all models (bypasses cooldowns and percentages).
-- **`q` (or `Esc`)**: Exit TUI cleanly.
+#### Keyboard Controls
+- **`Tab`**: Switch focus between the Accounts Table and the Quotas Breakdown panel.
+- **`↑` / `↓` (or `k` / `j`)**: Scroll through items in the focused panel.
+- **`Enter`**: Activate the selected account (refreshes credentials and updates system keychains).
+- **`r`**: Refresh quotas for the selected account from Google APIs.
+- **`R`**: Trigger an asynchronous batch refresh of all accounts' quotas.
+- **`w`**: Run a smart warmup cycle for the selected account.
+- **`W`**: Run a batch smart warmup cycle for all accounts.
+- **`f`**: Force warm up all models for the selected account (ignores cooldowns).
+- **`s`**: Open the keyboard-driven Sort Mode Selector menu.
+- **`/`**: Search/filter accounts by email address.
+- **`c`**: Toggle compact view mode (hides reset timers).
+- **`v`**: View detailed background worker execution logs.
+- **`t`**: Toggle color theme palette selector.
+- **`b`**: Create a local database backup JSON snapshot.
+- **`Esc` / `q`**: Close modal overlays or exit the application.
+
+#### Mouse Support
+You can click on any row in the Accounts Table to highlight it. Clicking on table column headers (`Email`, `Gemini`, `Claude`) cycles sorting modes and directions.
+
+---
+
+### CLI Mode
+
+Execute operations directly from your command line or run automation scripts:
+
+```bash
+# List all configured accounts and their current status
+agm list
+
+# Switch the active account by index or email
+agm switch <INDEX_OR_EMAIL>
+
+# Perform an automated rotation to the healthiest account in the pool
+agm auto-switch
+
+# Query cached quota data for the active account
+agm quota
+
+# Refresh and query live quota data from Google APIs
+agm quota --refresh
+
+# Run a smart warmup cycle for cooled-down models
+agm warmup
+
+# Force a warmup cycle for a specific model
+agm warmup --model gemini-3-flash --force
+
+# Backup the local database
+agm backup
+```
+
+---
+
+## Configuration and Database
+
+The utility stores configuration files, cached quotas, and warmup histories locally:
+* **Linux Path**: `~/.antigravity_tools/`
+* **Termux Path**: `/data/data/com.termux/files/home/.antigravity_tools/`
+
+Key Files:
+- `accounts.json`: Local database listing emails, display names, and credentials.
+- `accounts/*.json`: Individual account details (synced with desktop configs).
+- `cli_cache.json`: Cache for active session emails, validation tokens, and fetched quotas.
+- `warmup_history.json`: Historical record of model warmups used to calculate cooldown thresholds.
+
+---
+
+## Acknowledgments
+
+This tool builds upon and extends the core concepts and original workflows of the [lbjlaq/Antigravity-Manager](https://github.com/lbjlaq/Antigravity-Manager) project.
+
+---
+
+## License
+
+This project is licensed under the [MIT License](LICENSE) (or alternative terms of the repository). Refer to the license file for details.
