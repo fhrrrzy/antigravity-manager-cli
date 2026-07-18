@@ -498,6 +498,33 @@ impl App {
         }
     }
 
+    fn backup_db(&mut self) -> Result<String, String> {
+        let default_path = get_data_dir().join(format!("backup_antigravity_accounts_{}.json", chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")));
+        
+        #[derive(Serialize)]
+        struct BackupAcc {
+            email: String,
+            refresh_token: String,
+            name: String,
+        }
+        
+        let backup_data: Vec<BackupAcc> = self.accounts.iter().map(|a| BackupAcc {
+            email: a.email.clone(),
+            refresh_token: a.refresh_token.clone(),
+            name: a.name.clone(),
+        }).collect();
+        
+        let json_str = serde_json::to_string_pretty(&backup_data).map_err(|e| e.to_string())?;
+        
+        if let Some(parent) = default_path.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        
+        fs::write(&default_path, json_str).map_err(|e| e.to_string())?;
+        
+        Ok(default_path.to_string_lossy().into_owned())
+    }
+
     fn get_column_index(&self, click_x: u16, table_area: Rect) -> Option<usize> {
         if click_x <= table_area.x || click_x >= table_area.x + table_area.width - 1 {
             return None;
@@ -2119,6 +2146,103 @@ fn find_account_by_identifier<'a>(accounts: &'a [Account], id: &str) -> Option<&
     accounts.iter().find(|a| a.email.to_lowercase() == id.to_lowercase())
 }
 
+fn cli_backup(accounts: &[Account], filepath: Option<&str>) {
+    let default_path = get_data_dir().join(format!("backup_antigravity_accounts_{}.json", chrono::Local::now().format("%Y-%m-%d")));
+    let target_path = match filepath {
+        Some(fp) => PathBuf::from(fp),
+        None => default_path,
+    };
+    
+    if let Some(parent) = target_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    
+    #[derive(Serialize)]
+    struct BackupAcc {
+        email: String,
+        refresh_token: String,
+        name: String,
+    }
+    
+    let backup_data: Vec<BackupAcc> = accounts.iter().map(|a| BackupAcc {
+        email: a.email.clone(),
+        refresh_token: a.refresh_token.clone(),
+        name: a.name.clone(),
+    }).collect();
+    
+    match serde_json::to_string_pretty(&backup_data) {
+        Ok(json_str) => {
+            match fs::write(&target_path, json_str) {
+                Ok(_) => {
+                    println!("✓ Successfully backed up {} accounts to: {}", backup_data.len(), target_path.to_string_lossy());
+                }
+                Err(e) => {
+                    eprintln!("✗ Failed to write backup file: {}", e);
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("✗ Failed to serialize backup data: {}", e);
+        }
+    }
+}
+
+fn cli_restore(db_path: &Path, filepath: &str) {
+    let source_path = PathBuf::from(filepath);
+    if !source_path.exists() {
+        eprintln!("Error: Backup file does not exist at: {}", filepath);
+        std::process::exit(1);
+    }
+    
+    let content = match fs::read_to_string(&source_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error: Failed to read backup file: {}", e);
+            std::process::exit(1);
+        }
+    };
+    
+    #[allow(dead_code)]
+    #[derive(Deserialize)]
+    struct RawBackupAcc {
+        email: String,
+        refresh_token: String,
+        name: Option<String>,
+    }
+    
+    let raw_accs: Vec<RawBackupAcc> = match serde_json::from_str(&content) {
+        Ok(accs) => accs,
+        Err(e) => {
+            eprintln!("Error: Failed to parse backup file (invalid format): {}", e);
+            std::process::exit(1);
+        }
+    };
+    
+    if raw_accs.is_empty() {
+        println!("No accounts found in backup file. Nothing to restore.");
+        return;
+    }
+    
+    println!("Restoring {} accounts into local database...", raw_accs.len());
+    let mut restored_count = 0;
+    let mut skipped_count = 0;
+    
+    for acc in raw_accs {
+        match add_account_to_db(db_path, &acc.email, &acc.refresh_token) {
+            Ok(_) => {
+                println!("  ✓ Restored: {}", acc.email);
+                restored_count += 1;
+            }
+            Err(e) => {
+                println!("  ○ Skipped {}: {}", acc.email, e);
+                skipped_count += 1;
+            }
+        }
+    }
+    
+    println!("\nRestore complete! Restored: {} accounts, Skipped: {} (duplicates/errors).", restored_count, skipped_count);
+}
+
 fn cli_list(accounts: &[Account], active_email: Option<&str>, source: &str) {
     if accounts.is_empty() {
         println!("No accounts configured. Check backup file.");
@@ -2607,6 +2731,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 cli_warmup(&accounts, active_email.as_deref(), identifier, model.as_deref(), force).await;
             }
+            "backup" => {
+                let filepath = args.get(2).map(|s| s.as_str());
+                cli_backup(&accounts, filepath);
+            }
+            "restore" => {
+                if args.len() < 3 {
+                    eprintln!("Usage: agm restore <backup_file_path>");
+                    std::process::exit(1);
+                }
+                cli_restore(&db_path, &args[2]);
+            }
             "help" | "-h" | "--help" => {
                 println!("Antigravity Manager (Rust Unified Edition)\n");
                 println!("Usage:");
@@ -2617,10 +2752,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  agm quota all [-r]    Display/Refresh quotas for ALL accounts");
                 println!("  agm warmup [id] [flg] Run warmup cycles (use --model <name> or --force)");
                 println!("  agm warmup all        Sequentially warm up ALL configured accounts");
+                println!("  agm backup [path]     Backup all configured accounts to a JSON file");
+                println!("  agm restore <path>    Restore accounts from a JSON backup file");
                 println!("\nExamples:");
                 println!("  agm switch 3");
                 println!("  agm quota all --refresh");
                 println!("  agm warmup all");
+                println!("  agm backup ~/my_backup.json");
+                println!("  agm restore ~/my_backup.json");
             }
             _ => {
                 eprintln!("Unknown command '{}'. Type 'agm --help' for help.", subcommand);
@@ -3015,6 +3154,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Line::from(vec![Span::raw("  a             Add custom account with manual refresh token")]),
                     Line::from(vec![Span::raw("  l             Login via Google OAuth browser integration link")]),
                     Line::from(vec![Span::raw("  d / Backspace Open account deletion confirmation prompt")]),
+                    Line::from(vec![Span::raw("  b             Create a local database backup JSON snapshot")]),
                     Line::from(vec![Span::raw("")]),
                     Line::from(vec![Span::styled("Press [h], [Esc] or [q] to close this help guide", Style::default().fg(palette.green_success))]),
                 ];
@@ -3586,6 +3726,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 app.theme_search_query.clear();
                                 app.theme_list_state.select(Some(0));
                                 app.set_status("Open Color Theme Selector. Use up/down arrow keys or type search query.");
+                            }
+                        }
+                        KeyCode::Char('b') | KeyCode::Char('B') => {
+                            if !app.is_loading {
+                                match app.backup_db() {
+                                    Ok(path) => {
+                                        let name = Path::new(&path).file_name().unwrap_or_default().to_string_lossy();
+                                        app.set_status(&format!("✓ Backup saved: {}", name));
+                                    }
+                                    Err(e) => {
+                                        app.set_status(&format!("✗ Backup failed: {}", e));
+                                    }
+                                }
                             }
                         }
                         KeyCode::Char('q') | KeyCode::Esc => {
