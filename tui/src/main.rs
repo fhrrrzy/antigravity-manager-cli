@@ -278,6 +278,7 @@ impl ThemeType {
     }
 }
 
+#[allow(dead_code)]
 struct ThemePalette {
     name: &'static str,
     bg: Color,
@@ -361,20 +362,20 @@ enum NetworkResult {
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum SortMode {
     Email,
-    GeminiQuota,
-    ClaudeQuota,
-    Reset5h,
-    ResetWeekly,
+    Gemini5h,
+    GeminiWeekly,
+    Claude5h,
+    ClaudeWeekly,
 }
 
 impl SortMode {
     fn to_str(&self) -> &str {
         match self {
             SortMode::Email => "Email",
-            SortMode::GeminiQuota => "Gemini Quota",
-            SortMode::ClaudeQuota => "Claude Quota",
-            SortMode::Reset5h => "5h Reset",
-            SortMode::ResetWeekly => "Weekly Reset",
+            SortMode::Gemini5h => "Gemini 5h",
+            SortMode::GeminiWeekly => "Gemini Weekly",
+            SortMode::Claude5h => "Claude 5h",
+            SortMode::ClaudeWeekly => "Claude Weekly",
         }
     }
 }
@@ -534,8 +535,8 @@ impl App {
 
         let col_widths = if self.compact_mode {
             let active_w = 8;
-            let gemini_w = (inner_width as f32 * 0.25) as u16;
-            let claude_w = (inner_width as f32 * 0.25) as u16;
+            let gemini_w = (inner_width as f32 * 0.24) as u16;
+            let claude_w = (inner_width as f32 * 0.24) as u16;
             let email_w = if inner_width > (active_w + gemini_w + claude_w) {
                 inner_width - active_w - gemini_w - claude_w
             } else {
@@ -544,17 +545,17 @@ impl App {
             vec![active_w, email_w, gemini_w, claude_w]
         } else {
             let active_w = 8;
-            let gemini_w = (inner_width as f32 * 0.18) as u16;
-            let claude_w = (inner_width as f32 * 0.18) as u16;
-            let five_h_w = (inner_width as f32 * 0.13) as u16;
-            let weekly_w = (inner_width as f32 * 0.13) as u16;
-            let sum_fixed = active_w + gemini_w + claude_w + five_h_w + weekly_w;
+            let gemini_5h_w = (inner_width as f32 * 0.14) as u16;
+            let gemini_wk_w = (inner_width as f32 * 0.14) as u16;
+            let claude_5h_w = (inner_width as f32 * 0.14) as u16;
+            let claude_wk_w = (inner_width as f32 * 0.14) as u16;
+            let sum_fixed = active_w + gemini_5h_w + gemini_wk_w + claude_5h_w + claude_wk_w;
             let email_w = if inner_width > sum_fixed {
                 inner_width - sum_fixed
             } else {
                 30
             };
-            vec![active_w, email_w, gemini_w, claude_w, five_h_w, weekly_w]
+            vec![active_w, email_w, gemini_5h_w, gemini_wk_w, claude_5h_w, claude_wk_w]
         };
 
         let mut current_offset = 0;
@@ -654,11 +655,45 @@ impl App {
     fn sort_accounts(&mut self) {
         let selected_email = self.get_selected_account().map(|a| a.email.clone());
         
+        let get_weekly_pct = |quota_cache: Option<&QuotaData>, is_claude: bool| -> i32 {
+            let q = match quota_cache {
+                Some(q) => q,
+                None => return -1,
+            };
+            let groups = match &q.quota_groups {
+                Some(g) => g,
+                None => return -1,
+            };
+            for group in groups {
+                let gp_name = group.display_name.to_lowercase();
+                let target_match = if is_claude {
+                    gp_name.contains("claude") || gp_name.contains("anthropic")
+                } else {
+                    gp_name.contains("gemini") || gp_name.contains("google")
+                };
+                
+                for bucket in &group.buckets {
+                    let b_id = bucket.bucket_id.to_lowercase();
+                    let b_disp = bucket.display_name.as_ref().map(|s| s.to_lowercase()).unwrap_or_default();
+                    let is_weekly = bucket.window == "weekly" || b_id.contains("weekly") || b_disp.contains("weekly");
+                    
+                    let name_match = target_match 
+                        || (is_claude && (b_id.contains("claude") || b_disp.contains("claude")))
+                        || (!is_claude && (b_id.contains("gemini") || b_disp.contains("gemini")));
+                        
+                    if is_weekly && name_match {
+                        return (bucket.remaining_fraction * 100.0).round() as i32;
+                    }
+                }
+            }
+            -1
+        };
+
         match self.sort_mode {
             SortMode::Email => {
                 self.accounts.sort_by(|a, b| a.email.cmp(&b.email));
             }
-            SortMode::GeminiQuota => {
+            SortMode::Gemini5h => {
                 self.accounts.sort_by(|a, b| {
                     let a_pct = self.cli_cache.quotas.get(&a.email)
                         .and_then(|q| q.models.iter().find(|m| m.name.contains("gemini") || m.display_name.as_ref().map(|n| n.contains("Gemini")).unwrap_or(false)))
@@ -671,7 +706,14 @@ impl App {
                     b_pct.cmp(&a_pct)
                 });
             }
-            SortMode::ClaudeQuota => {
+            SortMode::GeminiWeekly => {
+                self.accounts.sort_by(|a, b| {
+                    let a_pct = get_weekly_pct(self.cli_cache.quotas.get(&a.email), false);
+                    let b_pct = get_weekly_pct(self.cli_cache.quotas.get(&b.email), false);
+                    b_pct.cmp(&a_pct)
+                });
+            }
+            SortMode::Claude5h => {
                 self.accounts.sort_by(|a, b| {
                     let a_pct = self.cli_cache.quotas.get(&a.email)
                         .and_then(|q| q.models.iter().find(|m| m.name.contains("claude") || m.display_name.as_ref().map(|n| n.contains("Claude")).unwrap_or(false)))
@@ -684,56 +726,11 @@ impl App {
                     b_pct.cmp(&a_pct)
                 });
             }
-            SortMode::Reset5h => {
+            SortMode::ClaudeWeekly => {
                 self.accounts.sort_by(|a, b| {
-                    let get_reset_time = |email: &str| -> Option<String> {
-                        let quota_cache = self.cli_cache.quotas.get(email)?;
-                        let groups = quota_cache.quota_groups.as_ref()?;
-                        for group in groups {
-                            for bucket in &group.buckets {
-                                if bucket.window == "5h" || bucket.bucket_id.contains("5h") {
-                                    if !bucket.reset_time.is_empty() {
-                                        return Some(bucket.reset_time.clone());
-                                    }
-                                }
-                            }
-                        }
-                        None
-                    };
-                    let a_time = get_reset_time(&a.email);
-                    let b_time = get_reset_time(&b.email);
-                    match (a_time, b_time) {
-                        (Some(t1), Some(t2)) => t1.cmp(&t2),
-                        (Some(_), None) => std::cmp::Ordering::Less,
-                        (None, Some(_)) => std::cmp::Ordering::Greater,
-                        (None, None) => std::cmp::Ordering::Equal,
-                    }
-                });
-            }
-            SortMode::ResetWeekly => {
-                self.accounts.sort_by(|a, b| {
-                    let get_reset_time = |email: &str| -> Option<String> {
-                        let quota_cache = self.cli_cache.quotas.get(email)?;
-                        let groups = quota_cache.quota_groups.as_ref()?;
-                        for group in groups {
-                            for bucket in &group.buckets {
-                                if bucket.window == "weekly" || bucket.bucket_id.contains("weekly") {
-                                    if !bucket.reset_time.is_empty() {
-                                        return Some(bucket.reset_time.clone());
-                                    }
-                                }
-                            }
-                        }
-                        None
-                    };
-                    let a_time = get_reset_time(&a.email);
-                    let b_time = get_reset_time(&b.email);
-                    match (a_time, b_time) {
-                        (Some(t1), Some(t2)) => t1.cmp(&t2),
-                        (Some(_), None) => std::cmp::Ordering::Less,
-                        (None, Some(_)) => std::cmp::Ordering::Greater,
-                        (None, None) => std::cmp::Ordering::Equal,
-                    }
+                    let a_pct = get_weekly_pct(self.cli_cache.quotas.get(&a.email), true);
+                    let b_pct = get_weekly_pct(self.cli_cache.quotas.get(&b.email), true);
+                    b_pct.cmp(&a_pct)
                 });
             }
         }
@@ -2851,9 +2848,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .split(chunks[1]);
 
             let headers_list = if app.compact_mode {
-                vec!["Active", "Email", "Gemini", "Claude"]
+                vec!["Active", "Email", "Gemini 5h", "Claude 5h"]
             } else {
-                vec!["Active", "Email", "Gemini Quota", "Claude Quota", "5h Reset", "Weekly Reset"]
+                vec!["Active", "Email", "Gemini 5h", "Gemini Wk", "Claude 5h", "Claude Wk"]
             };
             let header_cells = headers_list.iter().map(|h| Cell::from(*h).style(Style::default().fg(palette.border_active).add_modifier(Modifier::BOLD)));
             let header = Row::new(header_cells)
@@ -2881,6 +2878,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .map(|m| m.percentage)
                     });
 
+                    let get_weekly_pct = |quota_cache: Option<&QuotaData>, is_claude: bool| -> Option<i32> {
+                        let q = quota_cache?;
+                        let groups = q.quota_groups.as_ref()?;
+                        for group in groups {
+                            let gp_name = group.display_name.to_lowercase();
+                            let target_match = if is_claude {
+                                gp_name.contains("claude") || gp_name.contains("anthropic")
+                            } else {
+                                gp_name.contains("gemini") || gp_name.contains("google")
+                            };
+                            
+                            for bucket in &group.buckets {
+                                let b_id = bucket.bucket_id.to_lowercase();
+                                let b_disp = bucket.display_name.as_ref().map(|s| s.to_lowercase()).unwrap_or_default();
+                                let is_weekly = bucket.window == "weekly" || b_id.contains("weekly") || b_disp.contains("weekly");
+                                
+                                let name_match = target_match 
+                                    || (is_claude && (b_id.contains("claude") || b_disp.contains("claude")))
+                                    || (!is_claude && (b_id.contains("gemini") || b_disp.contains("gemini")));
+                                    
+                                if is_weekly && name_match {
+                                    return Some((bucket.remaining_fraction * 100.0).round() as i32);
+                                }
+                            }
+                        }
+                        None
+                    };
+
+                    let gemini_wk_pct = get_weekly_pct(quota_cache, false);
+                    let claude_wk_pct = get_weekly_pct(quota_cache, true);
+
                     let bar_width = 8;
                     let make_bar = |pct_opt: Option<i32>| -> (String, Color) {
                         match pct_opt {
@@ -2900,27 +2928,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     };
 
-                    let (gemini_bar, gemini_color) = make_bar(gemini_pct);
-                    let (claude_bar, claude_color) = make_bar(claude_pct);
-
-                    let mut weekly_reset = "--".to_string();
-                    let mut five_h_reset = "--".to_string();
-                    
-                    if let Some(groups) = quota_cache.and_then(|q| q.quota_groups.as_ref()) {
-                        for group in groups {
-                            for bucket in &group.buckets {
-                                if bucket.window == "weekly" || bucket.bucket_id.contains("weekly") {
-                                    if !bucket.reset_time.is_empty() {
-                                        weekly_reset = format_countdown(&bucket.reset_time).unwrap_or_else(|| "--".to_string());
-                                    }
-                                } else if bucket.window == "5h" || bucket.bucket_id.contains("5h") {
-                                    if !bucket.reset_time.is_empty() {
-                                        five_h_reset = format_countdown(&bucket.reset_time).unwrap_or_else(|| "--".to_string());
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    let (gemini_5h_bar, gemini_5h_color) = make_bar(gemini_pct);
+                    let (gemini_wk_bar, gemini_wk_color) = make_bar(gemini_wk_pct);
+                    let (claude_5h_bar, claude_5h_color) = make_bar(claude_pct);
+                    let (claude_wk_bar, claude_wk_color) = make_bar(claude_wk_pct);
 
                     let row_style = if is_active {
                         Style::default().fg(palette.green_success).add_modifier(Modifier::BOLD)
@@ -2931,12 +2942,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let mut cells = vec![
                         Cell::from(active_mark).style(if is_active { Style::default().fg(palette.green_success) } else { Style::default() }),
                         Cell::from(acc.email.clone()).style(row_style),
-                        Cell::from(gemini_bar).style(Style::default().fg(gemini_color)),
-                        Cell::from(claude_bar).style(Style::default().fg(claude_color)),
                     ];
-                    if !app.compact_mode {
-                        cells.push(Cell::from(five_h_reset).style(Style::default().fg(palette.blue_reset_5h)));
-                        cells.push(Cell::from(weekly_reset).style(Style::default().fg(palette.violet_reset_weekly)));
+                    if app.compact_mode {
+                        cells.push(Cell::from(gemini_5h_bar).style(Style::default().fg(gemini_5h_color)));
+                        cells.push(Cell::from(claude_5h_bar).style(Style::default().fg(claude_5h_color)));
+                    } else {
+                        cells.push(Cell::from(gemini_5h_bar).style(Style::default().fg(gemini_5h_color)));
+                        cells.push(Cell::from(gemini_wk_bar).style(Style::default().fg(gemini_wk_color)));
+                        cells.push(Cell::from(claude_5h_bar).style(Style::default().fg(claude_5h_color)));
+                        cells.push(Cell::from(claude_wk_bar).style(Style::default().fg(claude_wk_color)));
                     }
                     Row::new(cells)
                 })
@@ -2952,11 +2966,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 &[
                     Constraint::Length(8),
-                    Constraint::Percentage(30),
-                    Constraint::Percentage(18),
-                    Constraint::Percentage(18),
-                    Constraint::Percentage(13),
-                    Constraint::Percentage(13),
+                    Constraint::Percentage(36),
+                    Constraint::Percentage(14),
+                    Constraint::Percentage(14),
+                    Constraint::Percentage(14),
+                    Constraint::Percentage(14),
                 ]
             };
 
@@ -3923,11 +3937,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         KeyCode::Char('s') | KeyCode::Char('S') => {
                             if !app.is_loading {
                                 app.sort_mode = match app.sort_mode {
-                                    SortMode::Email => SortMode::GeminiQuota,
-                                    SortMode::GeminiQuota => SortMode::ClaudeQuota,
-                                    SortMode::ClaudeQuota => SortMode::Reset5h,
-                                    SortMode::Reset5h => SortMode::ResetWeekly,
-                                    SortMode::ResetWeekly => SortMode::Email,
+                                    SortMode::Email => SortMode::Gemini5h,
+                                    SortMode::Gemini5h => SortMode::GeminiWeekly,
+                                    SortMode::GeminiWeekly => SortMode::Claude5h,
+                                    SortMode::Claude5h => SortMode::ClaudeWeekly,
+                                    SortMode::ClaudeWeekly => SortMode::Email,
                                 };
                                 app.sort_accounts();
                                 app.set_status(&format!("Sorted accounts by: {}", app.sort_mode.to_str()));
@@ -3978,17 +3992,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         let new_mode = if app.compact_mode {
                                             match col_idx {
                                                 0 | 1 => Some(SortMode::Email),
-                                                2 => Some(SortMode::GeminiQuota),
-                                                3 => Some(SortMode::ClaudeQuota),
+                                                2 => Some(SortMode::Gemini5h),
+                                                3 => Some(SortMode::Claude5h),
                                                 _ => None,
                                             }
                                         } else {
                                             match col_idx {
                                                 0 | 1 => Some(SortMode::Email),
-                                                2 => Some(SortMode::GeminiQuota),
-                                                3 => Some(SortMode::ClaudeQuota),
-                                                4 => Some(SortMode::Reset5h),
-                                                5 => Some(SortMode::ResetWeekly),
+                                                2 => Some(SortMode::Gemini5h),
+                                                3 => Some(SortMode::GeminiWeekly),
+                                                4 => Some(SortMode::Claude5h),
+                                                5 => Some(SortMode::ClaudeWeekly),
                                                 _ => None,
                                             }
                                         };
