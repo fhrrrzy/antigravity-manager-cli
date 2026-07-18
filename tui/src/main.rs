@@ -1997,6 +1997,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let gemini_pct = quota_cache.and_then(|q| {
                         q.models.iter()
                             .find(|m| m.name.contains("flash-lite") || m.name.contains("flash_lite") || m.name.contains("flash_lite_preview") || m.display_name.as_ref().map(|n| n.contains("Flash Lite")).unwrap_or(false))
+                            .or_else(|| {
+                                q.models.iter().find(|m| m.name.contains("flash") || m.display_name.as_ref().map(|n| n.contains("Flash")).unwrap_or(false))
+                            })
                             .map(|m| m.percentage)
                     });
                     
@@ -2144,10 +2147,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
 
+                            let mut reset_str = String::new();
+                            if !m.reset_time.is_empty() {
+                                let display_time = if m.reset_time.len() >= 16 {
+                                    &m.reset_time[11..16]
+                                } else {
+                                    &m.reset_time
+                                };
+                                reset_str = format!(" [Reset: {}]", display_time);
+                            }
+
                             quota_items.push(ListItem::new(Line::from(vec![
                                 Span::styled(format!("{:<28}", display), Style::default().fg(Color::White)),
                                 Span::styled(bar_str, Style::default().fg(bar_color)),
                                 Span::styled(cooldown_str, Style::default().fg(Color::DarkGray)),
+                                Span::styled(reset_str, Style::default().fg(Color::Rgb(150, 150, 200))),
                             ])));
                         }
                     }
