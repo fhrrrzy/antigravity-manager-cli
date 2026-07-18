@@ -81,6 +81,153 @@ struct QuotaData {
     quota_groups: Option<Vec<QuotaGroup>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ThemeType {
+    KanagawaDragon,
+    GruvboxDark,
+    Nord,
+    Dracula,
+    OneDark,
+    RetroMatrix,
+    SolarizedDark,
+}
+
+impl ThemeType {
+    fn from_str(name: &str) -> Self {
+        match name.to_lowercase().as_str() {
+            "gruvbox dark" | "gruvbox" => ThemeType::GruvboxDark,
+            "nord" => ThemeType::Nord,
+            "dracula" => ThemeType::Dracula,
+            "one dark" | "onedark" => ThemeType::OneDark,
+            "retro matrix" | "matrix" => ThemeType::RetroMatrix,
+            "solarized dark" | "solarized" => ThemeType::SolarizedDark,
+            _ => ThemeType::KanagawaDragon,
+        }
+    }
+
+    fn to_str(&self) -> &'static str {
+        match self {
+            ThemeType::KanagawaDragon => "Kanagawa Dragon",
+            ThemeType::GruvboxDark => "Gruvbox Dark",
+            ThemeType::Nord => "Nord",
+            ThemeType::Dracula => "Dracula",
+            ThemeType::OneDark => "One Dark",
+            ThemeType::RetroMatrix => "Retro Matrix",
+            ThemeType::SolarizedDark => "Solarized Dark",
+        }
+    }
+
+    fn get_palette(&self) -> ThemePalette {
+        match self {
+            ThemeType::KanagawaDragon => ThemePalette {
+                name: "Kanagawa Dragon",
+                bg: Color::Rgb(20, 20, 30),
+                fg: Color::Rgb(220, 215, 186),
+                border_active: Color::Rgb(122, 168, 159),
+                border_inactive: Color::Rgb(84, 84, 96),
+                selection_bg: Color::Rgb(42, 42, 53),
+                green_success: Color::Rgb(138, 154, 134),
+                yellow_warning: Color::Rgb(196, 178, 138),
+                red_danger: Color::Rgb(196, 116, 110),
+                blue_reset_5h: Color::Rgb(139, 164, 177),
+                violet_reset_weekly: Color::Rgb(147, 138, 169),
+            },
+            ThemeType::GruvboxDark => ThemePalette {
+                name: "Gruvbox Dark",
+                bg: Color::Rgb(40, 40, 40),
+                fg: Color::Rgb(235, 219, 178),
+                border_active: Color::Rgb(254, 128, 25),
+                border_inactive: Color::Rgb(102, 92, 84),
+                selection_bg: Color::Rgb(60, 56, 54),
+                green_success: Color::Rgb(152, 151, 26),
+                yellow_warning: Color::Rgb(250, 189, 47),
+                red_danger: Color::Rgb(204, 36, 29),
+                blue_reset_5h: Color::Rgb(131, 165, 152),
+                violet_reset_weekly: Color::Rgb(211, 134, 155),
+            },
+            ThemeType::Nord => ThemePalette {
+                name: "Nord",
+                bg: Color::Rgb(46, 52, 64),
+                fg: Color::Rgb(236, 239, 244),
+                border_active: Color::Rgb(136, 192, 208),
+                border_inactive: Color::Rgb(76, 86, 106),
+                selection_bg: Color::Rgb(67, 76, 94),
+                green_success: Color::Rgb(163, 190, 140),
+                yellow_warning: Color::Rgb(235, 203, 139),
+                red_danger: Color::Rgb(191, 97, 106),
+                blue_reset_5h: Color::Rgb(129, 161, 193),
+                violet_reset_weekly: Color::Rgb(180, 142, 173),
+            },
+            ThemeType::Dracula => ThemePalette {
+                name: "Dracula",
+                bg: Color::Rgb(40, 42, 54),
+                fg: Color::Rgb(248, 248, 242),
+                border_active: Color::Rgb(189, 147, 249),
+                border_inactive: Color::Rgb(98, 114, 164),
+                selection_bg: Color::Rgb(68, 71, 90),
+                green_success: Color::Rgb(80, 250, 123),
+                yellow_warning: Color::Rgb(241, 250, 140),
+                red_danger: Color::Rgb(255, 85, 85),
+                blue_reset_5h: Color::Rgb(139, 233, 253),
+                violet_reset_weekly: Color::Rgb(255, 121, 198),
+            },
+            ThemeType::OneDark => ThemePalette {
+                name: "One Dark",
+                bg: Color::Rgb(40, 44, 52),
+                fg: Color::Rgb(171, 178, 191),
+                border_active: Color::Rgb(97, 175, 239),
+                border_inactive: Color::Rgb(92, 99, 112),
+                selection_bg: Color::Rgb(44, 50, 60),
+                green_success: Color::Rgb(152, 195, 121),
+                yellow_warning: Color::Rgb(229, 192, 123),
+                red_danger: Color::Rgb(224, 108, 117),
+                blue_reset_5h: Color::Rgb(86, 182, 194),
+                violet_reset_weekly: Color::Rgb(198, 120, 221),
+            },
+            ThemeType::RetroMatrix => ThemePalette {
+                name: "Retro Matrix",
+                bg: Color::Rgb(0, 0, 0),
+                fg: Color::Rgb(0, 255, 0),
+                border_active: Color::Rgb(0, 255, 0),
+                border_inactive: Color::Rgb(0, 100, 0),
+                selection_bg: Color::Rgb(0, 50, 0),
+                green_success: Color::Rgb(0, 255, 0),
+                yellow_warning: Color::Rgb(0, 200, 0),
+                red_danger: Color::Rgb(0, 150, 0),
+                blue_reset_5h: Color::Rgb(0, 180, 0),
+                violet_reset_weekly: Color::Rgb(0, 220, 0),
+            },
+            ThemeType::SolarizedDark => ThemePalette {
+                name: "Solarized Dark",
+                bg: Color::Rgb(7, 54, 66),
+                fg: Color::Rgb(147, 161, 161),
+                border_active: Color::Rgb(38, 139, 210),
+                border_inactive: Color::Rgb(88, 110, 117),
+                selection_bg: Color::Rgb(0, 43, 54),
+                green_success: Color::Rgb(133, 153, 0),
+                yellow_warning: Color::Rgb(181, 137, 0),
+                red_danger: Color::Rgb(220, 50, 47),
+                blue_reset_5h: Color::Rgb(42, 161, 152),
+                violet_reset_weekly: Color::Rgb(108, 113, 196),
+            },
+        }
+    }
+}
+
+struct ThemePalette {
+    name: &'static str,
+    bg: Color,
+    fg: Color,
+    border_active: Color,
+    border_inactive: Color,
+    selection_bg: Color,
+    green_success: Color,
+    yellow_warning: Color,
+    red_danger: Color,
+    blue_reset_5h: Color,
+    violet_reset_weekly: Color,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CliCache {
     active_email: Option<String>,
@@ -88,6 +235,8 @@ struct CliCache {
     tokens: HashMap<String, TokenCache>,
     #[serde(default)]
     quotas: HashMap<String, QuotaData>,
+    #[serde(default)]
+    theme: Option<String>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -195,6 +344,10 @@ struct App {
     show_logs: bool,
     log_state: ListState,
     last_auto_refresh: Option<Instant>,
+    theme: ThemeType,
+    show_theme_selector: bool,
+    theme_search_query: String,
+    theme_list_state: ListState,
 }
 
 impl App {
@@ -207,6 +360,14 @@ impl App {
         breakdown_state.select(Some(0));
         let mut log_state = ListState::default();
         log_state.select(Some(0));
+        
+        let initial_theme = match cache.theme.as_ref() {
+            Some(t) => ThemeType::from_str(t),
+            None => ThemeType::KanagawaDragon,
+        };
+        
+        let mut theme_list_state = ListState::default();
+        theme_list_state.select(Some(0));
         
         let mut app = Self {
             accounts,
@@ -232,6 +393,10 @@ impl App {
             show_logs: false,
             log_state,
             last_auto_refresh: Some(Instant::now()),
+            theme: initial_theme,
+            show_theme_selector: false,
+            theme_search_query: String::new(),
+            theme_list_state,
         };
         app.sort_accounts();
         app
@@ -243,6 +408,24 @@ impl App {
         } else {
             let query = self.search_query.to_lowercase();
             self.accounts.iter().filter(|a| a.email.to_lowercase().contains(&query)).collect()
+        }
+    }
+
+    fn get_visible_themes(&self) -> Vec<ThemeType> {
+        let all_themes = vec![
+            ThemeType::KanagawaDragon,
+            ThemeType::GruvboxDark,
+            ThemeType::Nord,
+            ThemeType::Dracula,
+            ThemeType::OneDark,
+            ThemeType::RetroMatrix,
+            ThemeType::SolarizedDark,
+        ];
+        if self.theme_search_query.is_empty() {
+            all_themes
+        } else {
+            let query = self.theme_search_query.to_lowercase();
+            all_themes.into_iter().filter(|t| t.to_str().to_lowercase().contains(&query)).collect()
         }
     }
 
@@ -511,6 +694,7 @@ fn load_cli_cache() -> CliCache {
         active_email: None,
         tokens: HashMap::new(),
         quotas: HashMap::new(),
+        theme: None,
     }
 }
 
@@ -2381,6 +2565,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     loop {
         terminal.draw(|f| {
+            let palette = app.theme.get_palette();
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
@@ -2394,11 +2579,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let local_time = chrono::Local::now().format("%H:%M:%S").to_string();
             let active_str = app.active_email.as_deref().unwrap_or("None");
             let title = Paragraph::new(format!(
-                " Antigravity Manager TUI | Active: {} | db: {} | 🐉 Kanagawa Dragon | 🕒 {} | 🟢 Online ",
-                active_str, app.db_desc, local_time
+                " Antigravity Manager TUI | Active: {} | db: {} | 🐉 {} | 🕒 {} | 🟢 Online ",
+                active_str, app.db_desc, palette.name, local_time
             ))
-            .block(Block::default().borders(Borders::ALL).title(" System Control Dashboard ").style(Style::default().fg(Color::Rgb(122, 168, 159))))
-            .style(Style::default().fg(Color::Rgb(220, 215, 186)).add_modifier(Modifier::BOLD));
+            .block(Block::default().borders(Borders::ALL).title(" System Control Dashboard ").style(Style::default().fg(palette.border_active)))
+            .style(Style::default().fg(palette.fg).add_modifier(Modifier::BOLD));
             f.render_widget(title, chunks[0]);
 
         let content_chunks = Layout::default()
@@ -2414,9 +2599,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 vec!["Active", "Email", "Gemini Quota", "Claude Quota", "5h Reset", "Weekly Reset"]
             };
-            let header_cells = headers_list.iter().map(|h| Cell::from(*h).style(Style::default().fg(Color::Rgb(122, 168, 159)).add_modifier(Modifier::BOLD)));
+            let header_cells = headers_list.iter().map(|h| Cell::from(*h).style(Style::default().fg(palette.border_active).add_modifier(Modifier::BOLD)));
             let header = Row::new(header_cells)
-                .style(Style::default().bg(Color::Rgb(30, 30, 45)))
+                .style(Style::default().bg(palette.selection_bg))
                 .height(1)
                 .bottom_margin(1);
 
@@ -2447,15 +2632,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let filled = ((pct as f64 / 100.0) * bar_width as f64).round() as usize;
                                 let empty = bar_width - filled;
                                 let bar_color = if pct >= 80 {
-                                    Color::Rgb(138, 154, 134)
+                                    palette.green_success
                                 } else if pct >= 30 {
-                                    Color::Rgb(196, 178, 138)
+                                    palette.yellow_warning
                                 } else {
-                                    Color::Rgb(196, 116, 110)
+                                    palette.red_danger
                                 };
                                 (format!("{} {:>3}%", "█".repeat(filled) + &"░".repeat(empty), pct), bar_color)
                             }
-                            None => ("N/A".to_string(), Color::Rgb(114, 114, 114)),
+                            None => ("N/A".to_string(), palette.border_inactive),
                         }
                     };
 
@@ -2482,20 +2667,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
 
                     let row_style = if is_active {
-                        Style::default().fg(Color::Rgb(138, 154, 134)).add_modifier(Modifier::BOLD)
+                        Style::default().fg(palette.green_success).add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(Color::Rgb(220, 215, 186))
+                        Style::default().fg(palette.fg)
                     };
 
                     let mut cells = vec![
-                        Cell::from(active_mark).style(if is_active { Style::default().fg(Color::Rgb(138, 154, 134)) } else { Style::default() }),
+                        Cell::from(active_mark).style(if is_active { Style::default().fg(palette.green_success) } else { Style::default() }),
                         Cell::from(acc.email.clone()).style(row_style),
                         Cell::from(gemini_bar).style(Style::default().fg(gemini_color)),
                         Cell::from(claude_bar).style(Style::default().fg(claude_color)),
                     ];
                     if !app.compact_mode {
-                        cells.push(Cell::from(five_h_reset).style(Style::default().fg(Color::Rgb(139, 164, 177))));
-                        cells.push(Cell::from(weekly_reset).style(Style::default().fg(Color::Rgb(147, 138, 169))));
+                        cells.push(Cell::from(five_h_reset).style(Style::default().fg(palette.blue_reset_5h)));
+                        cells.push(Cell::from(weekly_reset).style(Style::default().fg(palette.violet_reset_weekly)));
                     }
                     Row::new(cells)
                 })
@@ -2519,7 +2704,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ]
             };
 
-            let table_border_color = if app.focused_panel == Focus::Accounts { Color::Rgb(122, 168, 159) } else { Color::Rgb(84, 84, 96) };
+            let table_border_color = if app.focused_panel == Focus::Accounts { palette.border_active } else { palette.border_inactive };
             let table_title = if app.is_searching {
                 format!(" Accounts Summary (Sorted by: {}) | 🔍 Find: {}_ ", app.sort_mode.to_str(), app.search_query)
             } else if !app.search_query.is_empty() {
@@ -2533,7 +2718,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let account_table = Table::new(rows, widths)
                 .header(header)
                 .block(Block::default().borders(Borders::ALL).title(table_title).style(Style::default().fg(table_border_color)))
-                .highlight_style(Style::default().bg(Color::Rgb(42, 42, 53)).add_modifier(Modifier::BOLD));
+                .highlight_style(Style::default().bg(palette.selection_bg).add_modifier(Modifier::BOLD));
             f.render_stateful_widget(account_table, content_chunks[0], &mut app.list_state);
 
             if let Some(selected_acc) = app.get_selected_account() {
@@ -2554,20 +2739,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let is_highlight_active = app.active_email.as_ref() == Some(email);
                 let status_span = if is_highlight_active {
-                    Span::styled(" ★ ACTIVE SESSION ", Style::default().bg(Color::Rgb(50, 150, 50)).fg(Color::White).add_modifier(Modifier::BOLD))
+                    Span::styled(" ★ ACTIVE SESSION ", Style::default().bg(palette.green_success).fg(Color::Black).add_modifier(Modifier::BOLD))
                 } else {
-                    Span::styled(" ○ INACTIVE ", Style::default().fg(Color::DarkGray))
+                    Span::styled(" ○ INACTIVE ", Style::default().fg(palette.border_inactive))
                 };
                 
                 let header_text = vec![
                     Line::from(vec![Span::raw(" Email: "), Span::styled(email, Style::default().add_modifier(Modifier::BOLD))]),
-                    Line::from(vec![Span::raw(" Subscription Tier: "), Span::styled(tier, Style::default().fg(Color::Cyan))]),
-                    Line::from(vec![Span::raw(" Project ID: "), Span::styled(project_id, Style::default().fg(Color::Yellow))]),
+                    Line::from(vec![Span::raw(" Subscription Tier: "), Span::styled(tier, Style::default().fg(palette.border_active))]),
+                    Line::from(vec![Span::raw(" Project ID: "), Span::styled(project_id, Style::default().fg(palette.yellow_warning))]),
                     Line::from(vec![Span::raw(" Status: "), status_span]),
                 ];
                 
                 let details_header = Paragraph::new(header_text)
-                    .block(Block::default().borders(Borders::ALL).title(" Account Profile ").style(Style::default().fg(Color::Yellow)));
+                    .block(Block::default().borders(Borders::ALL).title(" Account Profile ").style(Style::default().fg(palette.border_inactive)));
                 f.render_widget(details_header, details_chunks[0]);
 
                 if app.is_loading {
@@ -2575,7 +2760,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "\n\n\n\n       ⏳  PROCESSING TRANSACTION...\n\n       Contacting Google Companion API and updating active session credentials.\n       Please wait, the interface will automatically refresh."
                     )
                     .alignment(ratatui::layout::Alignment::Center)
-                    .block(Block::default().borders(Borders::ALL).title(" Pending Action ").style(Style::default().fg(Color::Cyan)));
+                    .block(Block::default().borders(Borders::ALL).title(" Pending Action ").style(Style::default().fg(palette.border_active)));
                     f.render_widget(loading_msg, details_chunks[1]);
                 } else if let Some(q) = quota_cache {
                     let mut quota_items = Vec::new();
@@ -2600,11 +2785,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let pct = m.percentage;
                             
                             let bar_color = if pct >= 80 {
-                                Color::Rgb(50, 200, 50)  // Green
+                                palette.green_success
                             } else if pct >= 30 {
-                                Color::Rgb(240, 170, 30) // Orange/Yellow
+                                palette.yellow_warning
                             } else {
-                                Color::Rgb(220, 50, 50)  // Red
+                                palette.red_danger
                             };
 
                             let bar_width = 15;
@@ -2673,12 +2858,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "".to_string()
             };
             let status_block = Paragraph::new(format!("{}{}", loader_prefix, app.status_message))
-                .block(Block::default().borders(Borders::ALL).title(" Logger Console ").style(Style::default().fg(Color::Rgb(138, 154, 134))))
+                .block(Block::default().borders(Borders::ALL).title(" Logger Console ").style(Style::default().fg(palette.green_success)))
                 .wrap(Wrap { trim: true });
             f.render_widget(status_block, chunks[2]);
 
-            let footer = Paragraph::new(" [Enter] Switch | [r] Refresh | [w] Warm Up | [/] Find | [s] Sort | [c] Compact | [v] Logs | [h] Help")
-                .style(Style::default().fg(Color::Rgb(114, 114, 114)));
+            let footer = Paragraph::new(" [Enter] Switch | [r] Refresh | [w] Warm Up | [/] Find | [s] Sort | [c] Compact | [v] Logs | [t] Theme | [h] Help")
+                .style(Style::default().fg(palette.border_inactive));
             f.render_widget(footer, chunks[3]);
 
             if app.show_help {
@@ -2860,7 +3045,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let block = Block::default()
                     .title(" Session Logs History Explorer ")
                     .borders(Borders::ALL)
-                    .style(Style::default().bg(Color::Rgb(20, 20, 30)).fg(Color::Rgb(122, 168, 159)));
+                    .style(Style::default().bg(palette.bg).fg(palette.border_active));
                 
                 let area = centered_rect(80, 70, f.size());
                 f.render_widget(Clear, area);
@@ -2882,12 +3067,58 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }).collect();
 
                 let list_widget = List::new(log_items)
-                    .highlight_style(Style::default().bg(Color::Rgb(42, 42, 53)).add_modifier(Modifier::BOLD));
+                    .highlight_style(Style::default().bg(palette.selection_bg).add_modifier(Modifier::BOLD));
                 f.render_stateful_widget(list_widget, list_chunks[0], &mut app.log_state);
 
                 let tips = Paragraph::new(" [Esc/q/v] Close Logs Explorer  |  [j/k, Up/Down] Scroll History")
-                    .style(Style::default().fg(Color::Rgb(114, 114, 114)));
+                    .style(Style::default().fg(palette.border_inactive));
                 f.render_widget(tips, list_chunks[1]);
+            }
+
+            if app.show_theme_selector {
+                let block = Block::default()
+                    .title(" 🎨 Select Color Theme ")
+                    .borders(Borders::ALL)
+                    .style(Style::default().bg(palette.bg).fg(palette.border_active));
+                
+                let area = centered_rect(60, 50, f.size());
+                f.render_widget(Clear, area);
+                f.render_widget(block, area);
+
+                let list_chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(3), // Search input
+                        Constraint::Min(1),    // Themes list
+                        Constraint::Length(1), // Footer tips
+                    ])
+                    .margin(2)
+                    .split(area);
+
+                let search_block = Block::default()
+                    .title(" 🔍 Search Palette Name ")
+                    .borders(Borders::ALL)
+                    .style(Style::default().fg(palette.yellow_warning));
+                let search_para = Paragraph::new(format!("{}_", app.theme_search_query)).block(search_block);
+                f.render_widget(search_para, list_chunks[0]);
+
+                let visible_themes = app.get_visible_themes();
+                let theme_items: Vec<ListItem> = visible_themes.iter().map(|t| {
+                    let active_indicator = if app.theme == *t { "● " } else { "  " };
+                    ListItem::new(Line::from(vec![
+                        Span::styled(active_indicator, Style::default().fg(palette.green_success)),
+                        Span::raw(t.to_str()),
+                    ]))
+                }).collect();
+
+                let list_widget = List::new(theme_items)
+                    .block(Block::default().borders(Borders::ALL).title(" Palette Presets ").style(Style::default().fg(palette.border_inactive)))
+                    .highlight_style(Style::default().bg(palette.selection_bg).add_modifier(Modifier::BOLD));
+                f.render_stateful_widget(list_widget, list_chunks[1], &mut app.theme_list_state);
+
+                let tips = Paragraph::new(" [Esc/q/t] Cancel  |  [Enter] Select Theme  |  [j/k, Up/Down] Select preset")
+                    .style(Style::default().fg(palette.border_inactive));
+                f.render_widget(tips, list_chunks[2]);
             }
         })?;
 
@@ -3045,6 +3276,112 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
 
+                    if app.show_theme_selector {
+                        match key.code {
+                            KeyCode::Esc | KeyCode::Char('t') | KeyCode::Char('T') => {
+                                app.show_theme_selector = false;
+                                app.theme_search_query.clear();
+                                app.set_status("Theme selector closed.");
+                            }
+                            KeyCode::Enter => {
+                                let visible = app.get_visible_themes();
+                                if let Some(idx) = app.theme_list_state.selected() {
+                                    if let Some(&selected_theme) = visible.get(idx) {
+                                        app.theme = selected_theme;
+                                        app.cli_cache.theme = Some(selected_theme.to_str().to_string());
+                                        let _ = save_cli_cache(&app.cli_cache);
+                                        app.show_theme_selector = false;
+                                        app.theme_search_query.clear();
+                                        app.set_status(&format!("Successfully switched theme to: {}", selected_theme.to_str()));
+                                    }
+                                }
+                            }
+                            KeyCode::Backspace => {
+                                app.theme_search_query.pop();
+                                app.theme_list_state.select(Some(0));
+                            }
+                            KeyCode::Down => {
+                                let visible = app.get_visible_themes();
+                                if !visible.is_empty() {
+                                    let i = match app.theme_list_state.selected() {
+                                        Some(i) => {
+                                            if i >= visible.len() - 1 {
+                                                0
+                                            } else {
+                                                i + 1
+                                            }
+                                        }
+                                        None => 0,
+                                    };
+                                    app.theme_list_state.select(Some(i));
+                                }
+                            }
+                            KeyCode::Up => {
+                                let visible = app.get_visible_themes();
+                                if !visible.is_empty() {
+                                    let i = match app.theme_list_state.selected() {
+                                        Some(i) => {
+                                            if i == 0 {
+                                                visible.len() - 1
+                                            } else {
+                                                i - 1
+                                            }
+                                        }
+                                        None => 0,
+                                    };
+                                    app.theme_list_state.select(Some(i));
+                                }
+                            }
+                            KeyCode::Char('j') => {
+                                let visible = app.get_visible_themes();
+                                if !visible.is_empty() {
+                                    let i = match app.theme_list_state.selected() {
+                                        Some(i) => {
+                                            if i >= visible.len() - 1 {
+                                                0
+                                            } else {
+                                                i + 1
+                                            }
+                                        }
+                                        None => 0,
+                                    };
+                                    app.theme_list_state.select(Some(i));
+                                }
+                            }
+                            KeyCode::Char('k') => {
+                                let visible = app.get_visible_themes();
+                                if !visible.is_empty() {
+                                    let i = match app.theme_list_state.selected() {
+                                        Some(i) => {
+                                            if i == 0 {
+                                                visible.len() - 1
+                                            } else {
+                                                i - 1
+                                            }
+                                        }
+                                        None => 0,
+                                    };
+                                    app.theme_list_state.select(Some(i));
+                                }
+                            }
+                            KeyCode::Char('q') => {
+                                if app.theme_search_query.is_empty() {
+                                    app.show_theme_selector = false;
+                                    app.set_status("Theme selector closed.");
+                                } else {
+                                    app.theme_search_query.push('q');
+                                    app.theme_list_state.select(Some(0));
+                                }
+                            }
+                            KeyCode::Char(c) => {
+                                app.theme_search_query.push(c);
+                                app.theme_list_state.select(Some(0));
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+
                     if app.show_logs {
                         match key.code {
                             KeyCode::Char('v') | KeyCode::Char('V') | KeyCode::Char('q') | KeyCode::Esc => {
@@ -3124,6 +3461,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     app.log_state.select(Some(app.log_history.len() - 1));
                                 }
                                 app.set_status("Viewing complete session logs history.");
+                            }
+                        }
+                        KeyCode::Char('t') | KeyCode::Char('T') => {
+                            if !app.is_loading {
+                                app.show_theme_selector = true;
+                                app.theme_search_query.clear();
+                                app.theme_list_state.select(Some(0));
+                                app.set_status("Open Color Theme Selector. Use up/down arrow keys or type search query.");
                             }
                         }
                         KeyCode::Char('q') | KeyCode::Esc => {
