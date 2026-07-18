@@ -10,3 +10,6 @@ warmup_history.json
 .idea/
 .DS_Store
 *.swp
+
+# Local deployment scripts with secrets
+deploy_nodes.sh
