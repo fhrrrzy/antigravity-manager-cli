@@ -451,22 +451,86 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
             if q.models.is_empty() {
                 quota_items.push(ListItem::new("No model quota details cached. Press [r] to refresh quotas."));
             } else {
-                let mut sorted_models = q.models.clone();
-                sorted_models.sort_by(|a, b| {
-                    let a_is_claude = a.name.contains("claude");
-                    let b_is_claude = b.name.contains("claude");
-                    match (a_is_claude, b_is_claude) {
-                        (true, false) => std::cmp::Ordering::Greater,
-                        (false, true) => std::cmp::Ordering::Less,
-                        _ => a.name.cmp(&b.name),
-                    }
-                });
+                let gemini_5h_model = q.models.iter()
+                    .find(|m| m.name.contains("gemini") || m.display_name.as_ref().map(|n| n.contains("Gemini")).unwrap_or(false));
+                let claude_5h_model = q.models.iter()
+                    .find(|m| m.name.contains("claude") || m.display_name.as_ref().map(|n| n.contains("Claude")).unwrap_or(false));
 
-                for m in sorted_models {
-                    let name = &m.name;
-                    let display = m.display_name.as_deref().unwrap_or(name);
-                    let pct = m.percentage;
-                    
+                let mut items_to_render = Vec::new();
+
+                // Helper function to query weekly bucket reset and fraction
+                let get_weekly_bucket = |is_claude: bool| -> Option<(f64, String)> {
+                    let groups = q.quota_groups.as_ref()?;
+                    for group in groups {
+                        let gp_name = group.display_name.to_lowercase();
+                        let target_match = if is_claude {
+                            gp_name.contains("claude") || gp_name.contains("anthropic")
+                        } else {
+                            gp_name.contains("gemini") || gp_name.contains("google")
+                        };
+                        
+                        for bucket in &group.buckets {
+                            let b_id = bucket.bucket_id.to_lowercase();
+                            let b_disp = bucket.display_name.as_ref().map(|s| s.to_lowercase()).unwrap_or_default();
+                            let is_weekly = bucket.window == "weekly" || b_id.contains("weekly") || b_disp.contains("weekly");
+                            
+                            let name_match = target_match 
+                                || (is_claude && (b_id.contains("claude") || b_disp.contains("claude")))
+                                || (!is_claude && (b_id.contains("gemini") || b_disp.contains("gemini")));
+                                
+                            if is_weekly && name_match {
+                                return Some((bucket.remaining_fraction, bucket.reset_time.clone()));
+                            }
+                        }
+                    }
+                    None
+                };
+
+                // 1. Google Gemini (5h)
+                if let Some(m) = gemini_5h_model {
+                    items_to_render.push((
+                        "Google Gemini (5h)".to_string(),
+                        m.percentage,
+                        m.reset_time.clone(),
+                        Some(m.name.clone()),
+                        false, // is_weekly
+                    ));
+                }
+
+                // 2. Google Gemini (Weekly)
+                if let Some((fraction, reset_time)) = get_weekly_bucket(false) {
+                    items_to_render.push((
+                        "Google Gemini (Weekly)".to_string(),
+                        (fraction * 100.0).round() as i32,
+                        reset_time,
+                        None,
+                        true, // is_weekly
+                    ));
+                }
+
+                // 3. Anthropic Claude (5h)
+                if let Some(m) = claude_5h_model {
+                    items_to_render.push((
+                        "Anthropic Claude (5h)".to_string(),
+                        m.percentage,
+                        m.reset_time.clone(),
+                        Some(m.name.clone()),
+                        false, // is_weekly
+                    ));
+                }
+
+                // 4. Anthropic Claude (Weekly)
+                if let Some((fraction, reset_time)) = get_weekly_bucket(true) {
+                    items_to_render.push((
+                        "Anthropic Claude (Weekly)".to_string(),
+                        (fraction * 100.0).round() as i32,
+                        reset_time,
+                        None,
+                        true, // is_weekly
+                    ));
+                }
+
+                for (display, pct, reset_time, model_name, is_weekly) in items_to_render {
                     let bar_color = if pct >= 80 {
                         palette.green_success
                     } else if pct >= 30 {
@@ -485,56 +549,35 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
                         pct
                     );
 
-                    let history_key = format!("{}:{}:100", email, name);
                     let mut cooldown_str = String::new();
-                    if let Some(&last_ts) = app.warmup_history.get(&history_key) {
-                        let elapsed = chrono::Utc::now().timestamp() - last_ts;
-                        if elapsed < COOLDOWN_SECONDS {
-                            let rem = COOLDOWN_SECONDS - elapsed;
-                            let h = rem / 3600;
-                            let min = (rem % 3600) / 60;
-                            let local_reset = chrono::Local::now() + chrono::Duration::seconds(rem);
-                            cooldown_str = format!(" [Cooldown: {}h {}m (Resets at {})]", h, min, local_reset.format("%H:%M"));
+                    if let Some(name) = model_name {
+                        let history_key = format!("{}:{}:100", email, name);
+                        if let Some(&last_ts) = app.warmup_history.get(&history_key) {
+                            let elapsed = chrono::Utc::now().timestamp() - last_ts;
+                            if elapsed < COOLDOWN_SECONDS {
+                                let rem = COOLDOWN_SECONDS - elapsed;
+                                let h = rem / 3600;
+                                let min = (rem % 3600) / 60;
+                                let local_reset = chrono::Local::now() + chrono::Duration::seconds(rem);
+                                cooldown_str = format!(" [Cooldown: {}h {}m (Resets at {})]", h, min, local_reset.format("%H:%M"));
+                            }
                         }
                     }
 
                     let mut reset_str = String::new();
-                    if !m.reset_time.is_empty() {
-                        if let Some(cd) = format_countdown(&m.reset_time) {
-                            reset_str = format!(" [Reset in: {}]", cd);
-                        }
-                    }
-
-                    let is_claude_model = name.contains("claude") || display.to_lowercase().contains("claude");
                     let mut weekly_reset_str = String::new();
-                    if let Some(groups) = &q.quota_groups {
-                        for group in groups {
-                            let gp_name = group.display_name.to_lowercase();
-                            let target_match = if is_claude_model {
-                                gp_name.contains("claude") || gp_name.contains("anthropic")
-                            } else {
-                                gp_name.contains("gemini") || gp_name.contains("google")
-                            };
-                            
-                            for bucket in &group.buckets {
-                                let b_id = bucket.bucket_id.to_lowercase();
-                                let b_disp = bucket.display_name.as_ref().map(|s| s.to_lowercase()).unwrap_or_default();
-                                let is_weekly = bucket.window == "weekly" || b_id.contains("weekly") || b_disp.contains("weekly");
-                                
-                                let name_match = target_match 
-                                    || (is_claude_model && (b_id.contains("claude") || b_disp.contains("claude")))
-                                    || (!is_claude_model && (b_id.contains("gemini") || b_disp.contains("gemini")));
-                                    
-                                if is_weekly && name_match && !bucket.reset_time.is_empty() {
-                                    if let Some(cd) = format_countdown(&bucket.reset_time) {
-                                        if let Ok(rt) = chrono::DateTime::parse_from_rfc3339(&bucket.reset_time) {
-                                            let local_reset = rt.with_timezone(&chrono::Local);
-                                            weekly_reset_str = format!(" [Weekly Reset: {} ({})]", cd, local_reset.format("%b %d %H:%M"));
-                                        } else {
-                                            weekly_reset_str = format!(" [Weekly Reset: {}]", cd);
-                                        }
-                                    }
+
+                    if !reset_time.is_empty() {
+                        if let Some(cd) = format_countdown(&reset_time) {
+                            if is_weekly {
+                                if let Ok(rt) = chrono::DateTime::parse_from_rfc3339(&reset_time) {
+                                    let local_reset = rt.with_timezone(&chrono::Local);
+                                    weekly_reset_str = format!(" [Weekly Reset: {} ({})]", cd, local_reset.format("%b %d %H:%M"));
+                                } else {
+                                    weekly_reset_str = format!(" [Weekly Reset: {}]", cd);
                                 }
+                            } else {
+                                reset_str = format!(" [Reset in: {}]", cd);
                             }
                         }
                     }
