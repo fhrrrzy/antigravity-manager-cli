@@ -834,31 +834,69 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if mouse.column >= table_area.x && mouse.column < table_area.x + table_area.width {
                                 if mouse.row == table_area.y + 1 {
                                     if let Some(col_idx) = app.get_column_index(mouse.column, table_area) {
-                                        let new_mode = match col_idx {
-                                            0 | 1 => Some(SortMode::Email),
-                                            2 => {
-                                                if app.sort_mode == SortMode::Gemini5h {
-                                                    Some(SortMode::GeminiWeekly)
-                                                } else {
-                                                    Some(SortMode::Gemini5h)
+                                        if !app.is_loading {
+                                            match col_idx {
+                                                0 | 1 => {
+                                                    if app.sort_mode == SortMode::Email {
+                                                        app.sort_desc = !app.sort_desc;
+                                                    } else {
+                                                        app.sort_mode = SortMode::Email;
+                                                        app.sort_desc = false;
+                                                    }
                                                 }
-                                            }
-                                            3 => {
-                                                if app.sort_mode == SortMode::Claude5h {
-                                                    Some(SortMode::ClaudeWeekly)
-                                                } else {
-                                                    Some(SortMode::Claude5h)
+                                                2 => {
+                                                    match app.sort_mode {
+                                                        SortMode::Gemini5h => {
+                                                            if app.sort_desc {
+                                                                app.sort_mode = SortMode::GeminiWeekly;
+                                                                app.sort_desc = false;
+                                                            } else {
+                                                                app.sort_desc = true;
+                                                            }
+                                                        }
+                                                        SortMode::GeminiWeekly => {
+                                                            if app.sort_desc {
+                                                                app.sort_mode = SortMode::Gemini5h;
+                                                                app.sort_desc = false;
+                                                            } else {
+                                                                app.sort_desc = true;
+                                                            }
+                                                        }
+                                                        _ => {
+                                                            app.sort_mode = SortMode::Gemini5h;
+                                                            app.sort_desc = false;
+                                                        }
+                                                    }
                                                 }
+                                                3 => {
+                                                    match app.sort_mode {
+                                                        SortMode::Claude5h => {
+                                                            if app.sort_desc {
+                                                                app.sort_mode = SortMode::ClaudeWeekly;
+                                                                app.sort_desc = false;
+                                                            } else {
+                                                                app.sort_desc = true;
+                                                            }
+                                                        }
+                                                        SortMode::ClaudeWeekly => {
+                                                            if app.sort_desc {
+                                                                app.sort_mode = SortMode::Claude5h;
+                                                                app.sort_desc = false;
+                                                            } else {
+                                                                app.sort_desc = true;
+                                                            }
+                                                        }
+                                                        _ => {
+                                                            app.sort_mode = SortMode::Claude5h;
+                                                            app.sort_desc = false;
+                                                        }
+                                                    }
+                                                }
+                                                _ => {}
                                             }
-                                            _ => None,
-                                        };
-                                        
-                                        if let Some(mode) = new_mode {
-                                            if !app.is_loading {
-                                                app.sort_mode = mode;
-                                                app.sort_accounts();
-                                                app.set_status(&format!("Sorted accounts by: {}", app.sort_mode.to_str()));
-                                            }
+                                            app.sort_accounts();
+                                            let dir_str = if app.sort_desc { "descending" } else { "ascending" };
+                                            app.set_status(&format!("Sorted accounts by: {} ({})", app.sort_mode.to_str(), dir_str));
                                         }
                                     }
                                 } else if mouse.row >= table_area.y + 3 {

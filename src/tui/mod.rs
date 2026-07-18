@@ -37,6 +37,7 @@ pub struct App {
     pub search_query: String,
     pub is_searching: bool,
     pub sort_mode: SortMode,
+    pub sort_desc: bool,
     pub compact_mode: bool,
     pub show_help: bool,
     pub theme: ThemeType,
@@ -100,6 +101,7 @@ impl App {
             search_query: String::new(),
             is_searching: false,
             sort_mode: SortMode::Email,
+            sort_desc: false,
             compact_mode: false,
             show_help: false,
             theme,
@@ -281,7 +283,7 @@ impl App {
         };
 
         self.accounts.sort_by(|a, b| {
-            match self.sort_mode {
+            let res = match self.sort_mode {
                 SortMode::Email => a.email.cmp(&b.email),
                 SortMode::Gemini5h => {
                     let pct_a = get_model_pct(&a.email, "gemini");
@@ -303,6 +305,11 @@ impl App {
                     let pct_b = get_weekly_pct(&b.email, true);
                     pct_a.cmp(&pct_b)
                 }
+            };
+            if self.sort_desc {
+                res.reverse()
+            } else {
+                res
             }
         });
     }

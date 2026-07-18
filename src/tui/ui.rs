@@ -10,7 +10,7 @@ use ratatui::{
     }
 };
 
-use crate::types::{Focus, InputMode, QuotaData, COOLDOWN_SECONDS};
+use crate::types::{Focus, InputMode, QuotaData, COOLDOWN_SECONDS, SortMode};
 use crate::tui::App;
 
 fn format_countdown(reset_time: &str) -> Option<String> {
@@ -77,8 +77,45 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
         ])
         .split(chunks[1]);
 
-    let headers_list = vec!["Active", "Email / Quota Pool", "Gemini (5h / Wk)", "Claude (5h / Wk)"];
-    let header_cells = headers_list.iter().map(|h| Cell::from(*h).style(Style::default().fg(palette.border_active).add_modifier(Modifier::BOLD)));
+    let col1_text = if app.sort_mode == SortMode::Email {
+        format!("Email / Quota Pool {}", if app.sort_desc { "▼" } else { "▲" })
+    } else {
+        "Email / Quota Pool".to_string()
+    };
+    let col1_style = if app.sort_mode == SortMode::Email {
+        Style::default().fg(palette.blue_reset_5h).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(palette.border_active).add_modifier(Modifier::BOLD)
+    };
+
+    let col2_text = match app.sort_mode {
+        SortMode::Gemini5h => format!("Gemini [5h {}]", if app.sort_desc { "▼" } else { "▲" }),
+        SortMode::GeminiWeekly => format!("Gemini [Wk {}]", if app.sort_desc { "▼" } else { "▲" }),
+        _ => "Gemini (5h / Wk)".to_string(),
+    };
+    let col2_style = if app.sort_mode == SortMode::Gemini5h || app.sort_mode == SortMode::GeminiWeekly {
+        Style::default().fg(palette.blue_reset_5h).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(palette.border_active).add_modifier(Modifier::BOLD)
+    };
+
+    let col3_text = match app.sort_mode {
+        SortMode::Claude5h => format!("Claude [5h {}]", if app.sort_desc { "▼" } else { "▲" }),
+        SortMode::ClaudeWeekly => format!("Claude [Wk {}]", if app.sort_desc { "▼" } else { "▲" }),
+        _ => "Claude (5h / Wk)".to_string(),
+    };
+    let col3_style = if app.sort_mode == SortMode::Claude5h || app.sort_mode == SortMode::ClaudeWeekly {
+        Style::default().fg(palette.blue_reset_5h).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(palette.border_active).add_modifier(Modifier::BOLD)
+    };
+
+    let header_cells = vec![
+        Cell::from("Active").style(Style::default().fg(palette.border_inactive).add_modifier(Modifier::BOLD)),
+        Cell::from(col1_text).style(col1_style),
+        Cell::from(col2_text).style(col2_style),
+        Cell::from(col3_text).style(col3_style),
+    ];
     let header = Row::new(header_cells)
         .style(Style::default().bg(palette.selection_bg))
         .height(1)
