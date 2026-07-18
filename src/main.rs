@@ -1134,7 +1134,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                     }
                                 } else if mouse.row >= table_area.y + 2 {
+                                    let col_idx = app.get_column_index(mouse.column, table_area);
                                     let clicked_idx = app.list_state.offset() + ((mouse.row - (table_area.y + 2)) / 3) as usize;
+                                    
                                     let clicked_account = {
                                         let visible = app.get_visible_accounts();
                                         if clicked_idx < visible.len() {
@@ -1145,29 +1147,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     };
                                     
                                     if let Some(acc) = clicked_account {
-                                        if !app.is_loading {
-                                            // Select and focus the clicked account
-                                            app.list_state.select(Some(clicked_idx));
-                                            app.focused_panel = Focus::Accounts;
-                                            
-                                            // Instantly switch and activate the session
-                                            let is_currently_active = app.active_email.as_ref() == Some(&acc.email);
-                                            if is_currently_active {
-                                                app.set_status(&format!("Session is already active for {}.", acc.email));
-                                            } else {
-                                                app.is_loading = true;
-                                                app.set_status(&format!("Activating and writing keyring credentials for {}...", acc.email));
-                                                spawn_network_task(
-                                                    event_tx.clone(),
-                                                    Some(acc),
-                                                    Vec::new(),
-                                                    app.cli_cache.clone(),
-                                                    app.warmup_history.clone(),
-                                                    "switch",
-                                                    None,
-                                                    false,
-                                                    None,
-                                                );
+                                        // Log click details for debugging coordinate alignment
+                                        app.set_status(&format!(
+                                            "Click: row={}, col={}, col_idx={:?}, resolved_idx={}, email={}",
+                                            mouse.row, mouse.column, col_idx, clicked_idx, acc.email
+                                        ));
+                                        
+                                        // Only select/switch if clicking Col 0 (Active mark) or Col 1 (Email address)
+                                        if let Some(c_idx) = col_idx {
+                                            if c_idx == 0 || c_idx == 1 {
+                                                if !app.is_loading {
+                                                    // Select and focus the clicked account
+                                                    app.list_state.select(Some(clicked_idx));
+                                                    app.focused_panel = Focus::Accounts;
+                                                    
+                                                    // Instantly switch and activate the session
+                                                    let is_currently_active = app.active_email.as_ref() == Some(&acc.email);
+                                                    if is_currently_active {
+                                                        app.set_status(&format!("Session is already active for {}.", acc.email));
+                                                    } else {
+                                                        app.is_loading = true;
+                                                        app.set_status(&format!("Activating and writing keyring credentials for {}...", acc.email));
+                                                        spawn_network_task(
+                                                            event_tx.clone(),
+                                                            Some(acc),
+                                                            Vec::new(),
+                                                            app.cli_cache.clone(),
+                                                            app.warmup_history.clone(),
+                                                            "switch",
+                                                            None,
+                                                            false,
+                                                            None,
+                                                        );
+                                                    }
+                                                }
                                             }
                                         }
                                     }
