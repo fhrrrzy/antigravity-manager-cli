@@ -379,6 +379,7 @@ pub enum SortMode {
     GeminiWeekly,
     Claude5h,
     ClaudeWeekly,
+    Health,
 }
 
 impl SortMode {
@@ -389,6 +390,7 @@ impl SortMode {
             SortMode::GeminiWeekly => "Gemini Weekly",
             SortMode::Claude5h => "Claude 5h",
             SortMode::ClaudeWeekly => "Claude Weekly",
+            SortMode::Health => "Health",
         }
     }
 }

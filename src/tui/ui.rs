@@ -16,6 +16,8 @@ use crate::tui::App;
 pub const SORT_OPTIONS: &[(&str, SortMode, bool)] = &[
     ("Email (Ascending)", SortMode::Email, false),
     ("Email (Descending)", SortMode::Email, true),
+    ("Health/Errors (Ascending)", SortMode::Health, false),
+    ("Health/Errors (Descending)", SortMode::Health, true),
     ("Gemini 5h (Ascending)", SortMode::Gemini5h, false),
     ("Gemini 5h (Descending)", SortMode::Gemini5h, true),
     ("Gemini Weekly (Ascending)", SortMode::GeminiWeekly, false),
@@ -201,8 +203,19 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
         Style::default().fg(palette.border_active).add_modifier(Modifier::BOLD)
     };
 
+    let col_health_text = if app.sort_mode == SortMode::Health {
+        format!("Active {}", if app.sort_desc { "▼" } else { "▲" })
+    } else {
+        "Active".to_string()
+    };
+    let col_health_style = if app.sort_mode == SortMode::Health {
+        Style::default().fg(palette.blue_reset_5h).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(palette.border_active).add_modifier(Modifier::BOLD)
+    };
+
     let header_cells = vec![
-        Cell::from("Active").style(Style::default().fg(palette.border_inactive).add_modifier(Modifier::BOLD)),
+        Cell::from(col_health_text).style(col_health_style),
         Cell::from(col_email_text).style(col_email_style),
         Cell::from(col_gemini5h_text).style(col_gemini5h_style),
         Cell::from(col_geminiwk_text).style(col_geminiwk_style),
@@ -496,11 +509,46 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
                         }
                     }
 
+                    let is_claude_model = name.contains("claude") || display.to_lowercase().contains("claude");
+                    let mut weekly_reset_str = String::new();
+                    if let Some(groups) = &q.quota_groups {
+                        for group in groups {
+                            let gp_name = group.display_name.to_lowercase();
+                            let target_match = if is_claude_model {
+                                gp_name.contains("claude") || gp_name.contains("anthropic")
+                            } else {
+                                gp_name.contains("gemini") || gp_name.contains("google")
+                            };
+                            
+                            for bucket in &group.buckets {
+                                let b_id = bucket.bucket_id.to_lowercase();
+                                let b_disp = bucket.display_name.as_ref().map(|s| s.to_lowercase()).unwrap_or_default();
+                                let is_weekly = bucket.window == "weekly" || b_id.contains("weekly") || b_disp.contains("weekly");
+                                
+                                let name_match = target_match 
+                                    || (is_claude_model && (b_id.contains("claude") || b_disp.contains("claude")))
+                                    || (!is_claude_model && (b_id.contains("gemini") || b_disp.contains("gemini")));
+                                    
+                                if is_weekly && name_match && !bucket.reset_time.is_empty() {
+                                    if let Some(cd) = format_countdown(&bucket.reset_time) {
+                                        if let Ok(rt) = chrono::DateTime::parse_from_rfc3339(&bucket.reset_time) {
+                                            let local_reset = rt.with_timezone(&chrono::Local);
+                                            weekly_reset_str = format!(" [Weekly Reset: {} ({})]", cd, local_reset.format("%b %d %H:%M"));
+                                        } else {
+                                            weekly_reset_str = format!(" [Weekly Reset: {}]", cd);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     quota_items.push(ListItem::new(Line::from(vec![
                         Span::styled(format!("{:<28}", display), Style::default().fg(palette.fg)),
                         Span::styled(bar_str, Style::default().fg(bar_color)),
                         Span::styled(cooldown_str, Style::default().fg(palette.border_inactive)),
                         Span::styled(reset_str, Style::default().fg(palette.blue_reset_5h)),
+                        Span::styled(weekly_reset_str, Style::default().fg(palette.violet_reset_weekly)),
                     ])));
                 }
             }

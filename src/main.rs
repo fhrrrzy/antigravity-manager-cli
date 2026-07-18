@@ -111,10 +111,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 cli::cli_status(is_json);
             }
             "daemon" => {
+                let action = args.get(2).map(|s| s.as_str()).unwrap_or("run");
                 let mut quota = "gemini".to_string();
                 let mut interval = 900;
                 let mut skip = false;
-                for (i, arg) in args.iter().enumerate().skip(2) {
+                
+                for (i, arg) in args.iter().enumerate().skip(3) {
                     if skip {
                         skip = false;
                         continue;
@@ -139,7 +141,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                 }
-                cli::cli_daemon(&accounts, &quota, interval).await;
+                
+                match action {
+                    "start" => cli::cli_daemon_start(&quota, interval),
+                    "stop" => cli::cli_daemon_stop(),
+                    "status" => cli::cli_daemon_status(),
+                    "run" => cli::cli_daemon(&accounts, &quota, interval).await,
+                    _ => {
+                        let mut quota = "gemini".to_string();
+                        let mut interval = 900;
+                        let mut skip = false;
+                        for (i, arg) in args.iter().enumerate().skip(2) {
+                            if skip {
+                                skip = false;
+                                continue;
+                            }
+                            if arg == "--quota" {
+                                if i + 1 < args.len() {
+                                    quota = args[i + 1].clone();
+                                    skip = true;
+                                }
+                            } else if arg == "--interval" {
+                                if i + 1 < args.len() {
+                                    if let Ok(sec) = args[i + 1].parse::<u64>() {
+                                        interval = sec;
+                                    }
+                                    skip = true;
+                                }
+                            }
+                        }
+                        cli::cli_daemon(&accounts, &quota, interval).await;
+                    }
+                }
+            }
+            "remove" | "delete" => {
+                cli::cli_remove(&accounts).await;
             }
             "backup" => {
                 let filepath = args.get(2).map(|s| s.as_str());
@@ -158,9 +194,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  agm                   Launch interactive terminal user interface (TUI)");
                 println!("  agm list [--json]     List configured accounts (use --json for raw data)");
                 println!("  agm add               Interactively add a new account and refresh token");
+                println!("  agm remove            Interactively delete/remove an account from the database");
                 println!("  agm check             Verify credentials and plans for all accounts concurrently");
                 println!("  agm status [--json]   Get active account status and quotas (for tmux/sketchybar/prompts)");
                 println!("  agm daemon run [...]  Start background failover daemon (--quota gemini/claude/either, --interval secs)");
+                println!("  agm daemon start [...] Start background daemon in detached mode");
+                println!("  agm daemon stop       Stop the running background daemon process");
+                println!("  agm daemon status     Check if the background daemon is currently active");
                 println!("  agm switch [id]       Switch the active account (runs interactive selector if no ID given)");
                 println!("  agm auto-switch       Automatically switch to the healthiest/fullest standby account");
                 println!("  agm quota [id] [-r]   Display quotas (use --refresh to update, --json for raw data)");
@@ -173,8 +213,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  agm switch 3");
                 println!("  agm switch");
                 println!("  agm add");
+                println!("  agm remove");
                 println!("  agm status");
-                println!("  agm daemon run --quota gemini --interval 300");
+                println!("  agm daemon start --quota gemini --interval 300");
+                println!("  agm daemon stop");
+                println!("  agm daemon status");
                 println!("  agm auto-switch");
                 println!("  agm quota all --refresh --json");
                 println!("  agm warmup all");
@@ -451,55 +494,69 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 app.set_status("Sorted accounts by: Email (descending)");
                             }
                             KeyCode::Char('3') => {
+                                app.sort_mode = SortMode::Health;
+                                app.sort_desc = false;
+                                app.sort_accounts();
+                                app.show_sort_menu = false;
+                                app.set_status("Sorted accounts by: Health (ascending)");
+                            }
+                            KeyCode::Char('4') => {
+                                app.sort_mode = SortMode::Health;
+                                app.sort_desc = true;
+                                app.sort_accounts();
+                                app.show_sort_menu = false;
+                                app.set_status("Sorted accounts by: Health (descending)");
+                            }
+                            KeyCode::Char('5') => {
                                 app.sort_mode = SortMode::Gemini5h;
                                 app.sort_desc = false;
                                 app.sort_accounts();
                                 app.show_sort_menu = false;
                                 app.set_status("Sorted accounts by: Gemini 5h (ascending)");
                             }
-                            KeyCode::Char('4') => {
+                            KeyCode::Char('6') => {
                                 app.sort_mode = SortMode::Gemini5h;
                                 app.sort_desc = true;
                                 app.sort_accounts();
                                 app.show_sort_menu = false;
                                 app.set_status("Sorted accounts by: Gemini 5h (descending)");
                             }
-                            KeyCode::Char('5') => {
+                            KeyCode::Char('7') => {
                                 app.sort_mode = SortMode::GeminiWeekly;
                                 app.sort_desc = false;
                                 app.sort_accounts();
                                 app.show_sort_menu = false;
                                 app.set_status("Sorted accounts by: Gemini Weekly (ascending)");
                             }
-                            KeyCode::Char('6') => {
+                            KeyCode::Char('8') => {
                                 app.sort_mode = SortMode::GeminiWeekly;
                                 app.sort_desc = true;
                                 app.sort_accounts();
                                 app.show_sort_menu = false;
                                 app.set_status("Sorted accounts by: Gemini Weekly (descending)");
                             }
-                            KeyCode::Char('7') => {
+                            KeyCode::Char('9') => {
                                 app.sort_mode = SortMode::Claude5h;
                                 app.sort_desc = false;
                                 app.sort_accounts();
                                 app.show_sort_menu = false;
                                 app.set_status("Sorted accounts by: Claude 5h (ascending)");
                             }
-                            KeyCode::Char('8') => {
+                            KeyCode::Char('0') => {
                                 app.sort_mode = SortMode::Claude5h;
                                 app.sort_desc = true;
                                 app.sort_accounts();
                                 app.show_sort_menu = false;
                                 app.set_status("Sorted accounts by: Claude 5h (descending)");
                             }
-                            KeyCode::Char('9') => {
+                            KeyCode::Char('-') => {
                                 app.sort_mode = SortMode::ClaudeWeekly;
                                 app.sort_desc = false;
                                 app.sort_accounts();
                                 app.show_sort_menu = false;
                                 app.set_status("Sorted accounts by: Claude Weekly (ascending)");
                             }
-                            KeyCode::Char('0') => {
+                            KeyCode::Char('=') => {
                                 app.sort_mode = SortMode::ClaudeWeekly;
                                 app.sort_desc = true;
                                 app.sort_accounts();

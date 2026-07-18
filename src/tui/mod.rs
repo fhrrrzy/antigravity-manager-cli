@@ -295,6 +295,11 @@ impl App {
         self.accounts.sort_by(|a, b| {
             let res = match self.sort_mode {
                 SortMode::Email => a.email.cmp(&b.email),
+                SortMode::Health => {
+                    let failures_a = self.cli_cache.health.get(&a.email).map(|h| h.consecutive_failures).unwrap_or(0);
+                    let failures_b = self.cli_cache.health.get(&b.email).map(|h| h.consecutive_failures).unwrap_or(0);
+                    failures_a.cmp(&failures_b)
+                }
                 SortMode::Gemini5h => {
                     let pct_a = get_model_pct(&a.email, "gemini");
                     let pct_b = get_model_pct(&b.email, "gemini");

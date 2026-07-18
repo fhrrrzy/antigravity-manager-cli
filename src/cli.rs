@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 use serde::Serialize;
 use serde_json::json;
@@ -7,7 +8,7 @@ use serde_json::json;
 use crate::types::{Account, JsonAccountInfo, JsonQuotaOutput, QuotaData, ModelQuota, COOLDOWN_SECONDS};
 use crate::config::{
     load_cli_cache, save_cli_cache, get_data_dir, add_account_to_db,
-    load_warmup_history, save_warmup_history
+    load_warmup_history, save_warmup_history, delete_account_from_db
 };
 use crate::google_api::{ensure_valid_token, async_fetch_project_and_tier, async_fetch_quota_summary, async_fetch_quota, async_trigger_warmup};
 use crate::keyring::{write_to_system_keyring, write_oauth_token_file};
@@ -1224,4 +1225,247 @@ pub async fn cli_check(accounts: &[Account]) {
     }
     println!("└──────────────────────────────┴────────┴──────────────┴─────────────┘");
     println!("Summary: {} / {} Accounts Healthy", healthy_count, accounts.len());
+}
+
+fn get_pid_file_path() -> PathBuf {
+    get_data_dir().join("daemon.pid")
+}
+
+pub fn cli_daemon_status() {
+    let pid_file = get_pid_file_path();
+    if !pid_file.exists() {
+        println!("○ Daemon is stopped.");
+        return;
+    }
+    
+    if let Ok(content) = fs::read_to_string(&pid_file) {
+        if let Ok(pid) = content.trim().parse::<i32>() {
+            let status = Command::new("kill")
+                .arg("-0")
+                .arg(pid.to_string())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+                
+            if let Ok(s) = status {
+                if s.success() {
+                    println!("● Daemon is running (PID: {}).", pid);
+                    return;
+                }
+            }
+        }
+    }
+    
+    println!("○ Daemon is stopped (stale PID file found).");
+    let _ = fs::remove_file(pid_file);
+}
+
+pub fn cli_daemon_stop() {
+    let pid_file = get_pid_file_path();
+    if !pid_file.exists() {
+        println!("Daemon is not running.");
+        return;
+    }
+    
+    if let Ok(content) = fs::read_to_string(&pid_file) {
+        if let Ok(pid) = content.trim().parse::<i32>() {
+            println!("Stopping daemon (PID: {})...", pid);
+            let _ = Command::new("kill")
+                .arg(pid.to_string())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            
+            std::thread::sleep(Duration::from_millis(500));
+            let _ = fs::remove_file(&pid_file);
+            println!("✓ Daemon stopped successfully.");
+            return;
+        }
+    }
+    
+    let _ = fs::remove_file(pid_file);
+    println!("✓ Daemon stopped.");
+}
+
+pub fn cli_daemon_start(quota: &str, interval: u64) {
+    let pid_file = get_pid_file_path();
+    if pid_file.exists() {
+        if let Ok(content) = fs::read_to_string(&pid_file) {
+            if let Ok(pid) = content.trim().parse::<i32>() {
+                let status = Command::new("kill")
+                    .arg("-0")
+                    .arg(pid.to_string())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status();
+                if let Ok(s) = status {
+                    if s.success() {
+                        println!("Daemon is already running (PID: {}).", pid);
+                        return;
+                    }
+                }
+            }
+        }
+        let _ = fs::remove_file(&pid_file);
+    }
+    
+    let log_file_path = get_data_dir().join("daemon.log");
+    let log_file = std::fs::File::create(&log_file_path).ok();
+    
+    let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("agm"));
+    println!("Starting Antigravity Manager Failover Daemon in background...");
+    
+    let mut cmd = Command::new("setsid");
+    cmd.arg(current_exe)
+       .arg("daemon")
+       .arg("run")
+       .arg("--quota")
+       .arg(quota)
+       .arg("--interval")
+       .arg(interval.to_string());
+       
+    if let Some(ref f) = log_file {
+        if let Ok(dup) = f.try_clone() {
+            cmd.stdout(dup);
+        }
+        if let Ok(dup_err) = f.try_clone() {
+            cmd.stderr(dup_err);
+        }
+    } else {
+        cmd.stdout(std::process::Stdio::null())
+           .stderr(std::process::Stdio::null());
+    }
+    
+    let child = cmd.spawn();
+        
+    match child {
+        Ok(c) => {
+            let pid = c.id();
+            if let Err(e) = fs::write(&pid_file, pid.to_string()) {
+                eprintln!("Error writing PID file: {}", e);
+            } else {
+                println!("✓ Daemon started successfully (PID: {}).", pid);
+            }
+        }
+        Err(e) => {
+            eprintln!("Error spawning daemon process: {}", e);
+        }
+    }
+}
+
+pub async fn cli_remove(accounts: &[Account]) {
+    if accounts.is_empty() {
+        println!("No accounts configured.");
+        return;
+    }
+
+    use crossterm::{
+        terminal::{enable_raw_mode, disable_raw_mode},
+        event::{self, Event, KeyCode},
+    };
+    use std::io::{self, Write};
+
+    println!("Select an account to delete (use Up/Down or j/k, Enter to select, Esc to cancel):");
+    let mut selected = 0;
+
+    if let Err(_) = enable_raw_mode() {
+        println!("Please enter the index of the account (0 to {}):", accounts.len() - 1);
+        for (idx, acc) in accounts.iter().enumerate() {
+            println!("  [{}] {}", idx, acc.email);
+        }
+        let mut input = String::new();
+        if io::stdin().read_line(&mut input).is_ok() {
+            if let Ok(idx) = input.trim().parse::<usize>() {
+                if idx < accounts.len() {
+                    let email = &accounts[idx].email;
+                    print!("Are you sure you want to delete {}? (y/n): ", email);
+                    let _ = io::stdout().flush();
+                    let mut confirm = String::new();
+                    if io::stdin().read_line(&mut confirm).is_ok() && confirm.trim().to_lowercase() == "y" {
+                        let db_path = get_data_dir().join("accounts.json");
+                        match delete_account_from_db(&db_path, email) {
+                            Ok(_) => println!("✓ Account {} deleted successfully.", email),
+                            Err(e) => eprintln!("Error deleting account: {}", e),
+                        }
+                    } else {
+                        println!("Cancelled.");
+                    }
+                    return;
+                }
+            }
+        }
+        println!("Invalid selection.");
+        return;
+    }
+
+    for (idx, acc) in accounts.iter().enumerate() {
+        if idx == selected {
+            println!("  > \x1b[31m{}\x1b[0m", acc.email);
+        } else {
+            println!("    {}", acc.email);
+        }
+    }
+
+    let mut target_email = None;
+    loop {
+        if let Ok(Event::Key(key)) = event::read() {
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if selected > 0 {
+                        selected -= 1;
+                        print!("\x1b[{}F", accounts.len());
+                        for (idx, acc) in accounts.iter().enumerate() {
+                            if idx == selected {
+                                print!("\x1b[2K  > \x1b[31m{}\x1b[0m\n", acc.email);
+                            } else {
+                                print!("\x1b[2K    {}\n", acc.email);
+                            }
+                        }
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if selected < accounts.len() - 1 {
+                        selected += 1;
+                        print!("\x1b[{}F", accounts.len());
+                        for (idx, acc) in accounts.iter().enumerate() {
+                            if idx == selected {
+                                print!("\x1b[2K  > \x1b[31m{}\x1b[0m\n", acc.email);
+                            } else {
+                                print!("\x1b[2K    {}\n", acc.email);
+                            }
+                        }
+                    }
+                }
+                KeyCode::Enter => {
+                    target_email = Some(accounts[selected].email.clone());
+                    break;
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let _ = disable_raw_mode();
+    if let Some(email) = target_email {
+        print!("\nAre you sure you want to permanently delete {}? (y/N): ", email);
+        let _ = io::stdout().flush();
+        let mut input = String::new();
+        if io::stdin().read_line(&mut input).is_ok() {
+            let choice = input.trim().to_lowercase();
+            if choice == "y" || choice == "yes" {
+                let db_path = get_data_dir().join("accounts.json");
+                match delete_account_from_db(&db_path, &email) {
+                    Ok(_) => println!("✓ Account {} deleted successfully.", email),
+                    Err(e) => eprintln!("Error deleting account: {}", e),
+                }
+            } else {
+                println!("Deletion cancelled.");
+            }
+        }
+    } else {
+        println!("\nCancelled.");
+    }
 }
