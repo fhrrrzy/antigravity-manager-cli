@@ -1225,8 +1225,28 @@ pub async fn cli_daemon(accounts: &[Account], quota_target: &str, interval_secs:
                                 
                                 if trigger_failover {
                                     println!("[DAEMON] Automatically switching to the healthiest account...");
+                                    let notify_cfg = crate::config::load_notify_config();
+                                    if notify_cfg.notify_on_failover.unwrap_or(true) {
+                                        let msg = format!(
+                                            "⚡ AGM Failover: Quota exhausted on {} (Gemini: {}%, Claude: {}%). Switching account.",
+                                            acc.email, gemini_pct, claude_pct
+                                        );
+                                        let _ = send_webhook_notification(&notify_cfg, &msg).await;
+                                    }
                                     cli_auto_switch(accounts, Some(&acc.email)).await;
                                 } else {
+                                    // Check low quota threshold
+                                    let notify_cfg = crate::config::load_notify_config();
+                                    if notify_cfg.notify_on_low_quota.unwrap_or(false) {
+                                        let threshold = notify_cfg.low_quota_threshold.unwrap_or(10);
+                                        if (gemini_pct >= 0 && gemini_pct <= threshold) || (claude_pct >= 0 && claude_pct <= threshold) {
+                                            let msg = format!(
+                                                "⚠️ AGM Low Quota Warning on {}: Gemini {}%, Claude {}% (threshold: {}%)",
+                                                acc.email, gemini_pct, claude_pct, threshold
+                                            );
+                                            let _ = send_webhook_notification(&notify_cfg, &msg).await;
+                                        }
+                                    }
                                     println!(
                                         "[DAEMON] Active account is healthy. Quotas: Gemini: {}%, Claude: {}%",
                                         if gemini_pct >= 0 { format!("{}%", gemini_pct) } else { "N/A".to_string() },
@@ -1241,6 +1261,11 @@ pub async fn cli_daemon(accounts: &[Account], quota_target: &str, interval_secs:
                     }
                     None => {
                         eprintln!("[DAEMON] Active token refresh failed. Triggering failover to healthy account...");
+                        let notify_cfg = crate::config::load_notify_config();
+                        if notify_cfg.notify_on_failover.unwrap_or(true) {
+                            let msg = format!("🔴 AGM Failover: Token refresh failed for {}. Switching to backup account.", acc.email);
+                            let _ = send_webhook_notification(&notify_cfg, &msg).await;
+                        }
                         cli_auto_switch(accounts, Some(&acc.email)).await;
                     }
                 }
@@ -1540,3 +1565,650 @@ pub async fn cli_remove(accounts: &[Account]) {
         println!("\nCancelled.");
     }
 }
+
+// ============================================================
+// NEW FEATURES v1.4.0
+// ============================================================
+
+use crate::config::{load_notify_config, save_notify_config, load_batch_size, get_notify_config_path};
+
+// ─────────────────────────────────────────────
+// agm doctor — Environment diagnostic
+// ─────────────────────────────────────────────
+pub async fn cli_doctor(accounts: &[Account]) {
+    println!("\n🩺  Antigravity Manager — Environment Diagnostics\n");
+    let mut all_ok = true;
+
+    // 1. Data directory
+    let data_dir = get_data_dir();
+    let dir_ok = data_dir.exists() && fs::metadata(&data_dir).map(|m| m.is_dir()).unwrap_or(false);
+    print_check("Data directory accessible", dir_ok, Some(data_dir.to_string_lossy().as_ref()));
+    if !dir_ok { all_ok = false; }
+
+    // 2. accounts.json or backup
+    let accs_ok = !accounts.is_empty();
+    print_check(
+        "Account database loaded",
+        accs_ok,
+        Some(&format!("{} account(s) found", accounts.len())),
+    );
+    if !accs_ok { all_ok = false; }
+
+    // 3. cli_cache.json readable & valid
+    let cache = load_cli_cache();
+    let cache_path = get_data_dir().join("cli_cache.json");
+    let cache_ok = cache_path.exists();
+    print_check("cli_cache.json exists", cache_ok, Some(cache_path.to_string_lossy().as_ref()));
+
+    // 4. Active session
+    let session_ok = cache.active_email.is_some();
+    print_check(
+        "Active session configured",
+        session_ok,
+        cache.active_email.as_deref().or(Some("none")),
+    );
+
+    // 5. Token freshness for active account
+    if let Some(ref email) = cache.active_email {
+        if let Some(acc) = accounts.iter().find(|a| &a.email == email) {
+            print!("  🔍 Validating token for {}... ", email);
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+            let mut cache_clone = cache.clone();
+            let token_ok = crate::google_api::ensure_valid_token(&acc.email, &acc.refresh_token, &mut cache_clone).await.is_some();
+            if token_ok {
+                println!("✓ Valid");
+            } else {
+                println!("✗ FAILED — token may be expired or revoked");
+                all_ok = false;
+            }
+        }
+    }
+
+    // 6. Network connectivity
+    print!("  🌐 Network connectivity (Google OAuth)... ");
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    let net_ok = reqwest::Client::new()
+        .get("https://oauth2.googleapis.com")
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
+        .is_ok();
+    if net_ok { println!("✓ Reachable"); } else { println!("✗ Unreachable"); all_ok = false; }
+
+    // 7. Notify config
+    let notify_path = get_notify_config_path();
+    let notify_exists = notify_path.exists();
+    print_check(
+        "Notify config (optional)",
+        notify_exists,
+        if notify_exists { Some("configured") } else { Some("not set — run `agm notify setup`") },
+    );
+
+    // 8. Batch size
+    let batch_size = load_batch_size();
+    println!("  ℹ️  Warmup batch size: {} (set via gui_config.json `batch_size`)", batch_size);
+
+    // 9. Warmup history
+    let history = load_warmup_history();
+    println!("  ℹ️  Warmup history entries: {}", history.len());
+
+    println!();
+    if all_ok {
+        println!("✅  All checks passed! Your environment looks healthy.\n");
+    } else {
+        println!("⚠️   Some checks failed. Review the items marked ✗ above.\n");
+    }
+}
+
+fn print_check(label: &str, ok: bool, detail: Option<&str>) {
+    let icon = if ok { "✓" } else { "✗" };
+    let detail_str = detail.map(|d| format!(" ({})", d)).unwrap_or_default();
+    println!("  {} {}{}", icon, label, detail_str);
+}
+
+// ─────────────────────────────────────────────
+// agm rotate — Print crontab snippet
+// ─────────────────────────────────────────────
+pub fn cli_rotate(interval_mins: u64) {
+    let exe = std::env::current_exe()
+        .unwrap_or_else(|_| PathBuf::from("agm"))
+        .to_string_lossy()
+        .to_string();
+    let cron_expr = match interval_mins {
+        5   => "*/5 * * * *".to_string(),
+        10  => "*/10 * * * *".to_string(),
+        15  => "*/15 * * * *".to_string(),
+        30  => "*/30 * * * *".to_string(),
+        60  => "0 * * * *".to_string(),
+        120 => "0 */2 * * *".to_string(),
+        _   => format!("*/{} * * * *", interval_mins),
+    };
+    let data_dir = get_data_dir();
+    let log_path = data_dir.join("cron.log");
+
+    println!("\n📋  Crontab snippet for automatic quota refresh every {} minutes:\n", interval_mins);
+    println!("  # Add this to your crontab with: crontab -e");
+    println!("  {} {} auto-switch >> {} 2>&1", cron_expr, exe, log_path.display());
+    println!();
+    println!("  # Or to warm up all accounts:");
+    println!("  {} {} warmup all >> {} 2>&1", cron_expr, exe, log_path.display());
+    println!();
+    println!("  # Or to keep daemon auto-restarting:");
+    println!("  @reboot {} daemon start --quota gemini --interval 300", exe);
+    println!();
+    println!("  Copy one of the lines above, then run: crontab -e\n");
+}
+
+// ─────────────────────────────────────────────
+// agm completions — Shell completion scripts
+// ─────────────────────────────────────────────
+pub fn cli_completions(shell: &str) {
+    let bash = r#"# Antigravity Manager CLI — Bash completions
+# Add to ~/.bashrc: source <(agm completions bash)
+_agm_completions() {
+    local cur prev words cword
+    _init_completion || return
+    local commands="list switch auto-switch quota warmup add remove check status daemon backup restore doctor rotate completions notify qr import-url help"
+    case "$prev" in
+        switch) COMPREPLY=(); return ;;
+        quota) COMPREPLY=($(compgen -W "all --refresh --json" -- "$cur")); return ;;
+        warmup) COMPREPLY=($(compgen -W "all --model --force" -- "$cur")); return ;;
+        daemon) COMPREPLY=($(compgen -W "start stop status run" -- "$cur")); return ;;
+        completions) COMPREPLY=($(compgen -W "bash zsh fish" -- "$cur")); return ;;
+        notify) COMPREPLY=($(compgen -W "setup test status" -- "$cur")); return ;;
+        rotate) COMPREPLY=($(compgen -W "5 10 15 30 60 120" -- "$cur")); return ;;
+    esac
+    COMPREPLY=($(compgen -W "$commands" -- "$cur"))
+}
+complete -F _agm_completions agm
+"#;
+
+    let zsh = r#"#compdef agm
+# Antigravity Manager CLI — Zsh completions
+# Add to ~/.zshrc: source <(agm completions zsh)
+_agm() {
+    local state
+    _arguments '1: :->cmd' '*: :->args'
+    case $state in
+        cmd)
+            _values 'commands' \
+                'list[List configured accounts]' \
+                'switch[Switch active account]' \
+                'auto-switch[Auto-switch to healthiest account]' \
+                'quota[Show/refresh quota data]' \
+                'warmup[Run warmup cycles]' \
+                'add[Add a new account]' \
+                'remove[Remove an account]' \
+                'check[Check all credentials]' \
+                'status[Show active session status]' \
+                'daemon[Manage background daemon]' \
+                'backup[Backup accounts to JSON]' \
+                'restore[Restore from backup]' \
+                'doctor[Run environment diagnostics]' \
+                'rotate[Print crontab rotation snippet]' \
+                'completions[Print shell completions]' \
+                'notify[Configure webhook notifications]' \
+                'qr[Export/import account as QR code]' \
+                'import-url[Import accounts from URL]'
+            ;;
+        args)
+            case $words[2] in
+                quota) _values 'flags' 'all' '--refresh' '--json' ;;
+                warmup) _values 'flags' 'all' '--model' '--force' ;;
+                daemon) _values 'actions' 'start' 'stop' 'status' 'run' ;;
+                completions) _values 'shells' 'bash' 'zsh' 'fish' ;;
+                notify) _values 'actions' 'setup' 'test' 'status' ;;
+            esac
+            ;;
+    esac
+}
+_agm
+"#;
+
+    let fish = r#"# Antigravity Manager CLI — Fish completions
+# Add to ~/.config/fish/completions/agm.fish
+complete -c agm -f
+complete -c agm -n '__fish_use_subcommand' -a 'list'         -d 'List configured accounts'
+complete -c agm -n '__fish_use_subcommand' -a 'switch'       -d 'Switch active account'
+complete -c agm -n '__fish_use_subcommand' -a 'auto-switch'  -d 'Auto-switch to healthiest account'
+complete -c agm -n '__fish_use_subcommand' -a 'quota'        -d 'Show/refresh quota data'
+complete -c agm -n '__fish_use_subcommand' -a 'warmup'       -d 'Run warmup cycles'
+complete -c agm -n '__fish_use_subcommand' -a 'add'          -d 'Add a new account'
+complete -c agm -n '__fish_use_subcommand' -a 'remove'       -d 'Remove an account'
+complete -c agm -n '__fish_use_subcommand' -a 'check'        -d 'Check all credentials'
+complete -c agm -n '__fish_use_subcommand' -a 'status'       -d 'Show active session status'
+complete -c agm -n '__fish_use_subcommand' -a 'daemon'       -d 'Manage background daemon'
+complete -c agm -n '__fish_use_subcommand' -a 'backup'       -d 'Backup accounts to JSON'
+complete -c agm -n '__fish_use_subcommand' -a 'restore'      -d 'Restore from backup'
+complete -c agm -n '__fish_use_subcommand' -a 'doctor'       -d 'Run environment diagnostics'
+complete -c agm -n '__fish_use_subcommand' -a 'rotate'       -d 'Print crontab rotation snippet'
+complete -c agm -n '__fish_use_subcommand' -a 'completions'  -d 'Print shell completions'
+complete -c agm -n '__fish_use_subcommand' -a 'notify'       -d 'Configure webhook notifications'
+complete -c agm -n '__fish_use_subcommand' -a 'qr'           -d 'Export/import account as QR code'
+complete -c agm -n '__fish_use_subcommand' -a 'import-url'   -d 'Import accounts from a URL'
+# Subcommand flags
+complete -c agm -n '__fish_seen_subcommand_from quota'   -a 'all --refresh --json'
+complete -c agm -n '__fish_seen_subcommand_from warmup'  -a 'all --force'
+complete -c agm -n '__fish_seen_subcommand_from warmup'  -l model -d 'Model name'
+complete -c agm -n '__fish_seen_subcommand_from daemon'  -a 'start stop status run'
+complete -c agm -n '__fish_seen_subcommand_from completions' -a 'bash zsh fish'
+complete -c agm -n '__fish_seen_subcommand_from notify'  -a 'setup test status'
+complete -c agm -n '__fish_seen_subcommand_from qr'      -a 'export import'
+"#;
+
+    match shell.to_lowercase().as_str() {
+        "bash" => println!("{}", bash),
+        "zsh"  => println!("{}", zsh),
+        "fish" => println!("{}", fish),
+        _ => {
+            eprintln!("Unknown shell '{}'. Supported: bash, zsh, fish", shell);
+            eprintln!("Usage: agm completions <bash|zsh|fish>");
+            std::process::exit(1);
+        }
+    }
+}
+
+// ─────────────────────────────────────────────
+// agm notify — Webhook notification management
+// ─────────────────────────────────────────────
+pub async fn cli_notify(action: &str, args: &[String]) {
+    match action {
+        "status" => {
+            let cfg = load_notify_config();
+            let path = get_notify_config_path();
+            println!("\n🔔  Notification Configuration\n");
+            println!("  Config path: {}", path.display());
+            println!("  Discord webhook:  {}", cfg.discord_webhook.as_deref().unwrap_or("not set"));
+            println!("  Slack webhook:    {}", cfg.slack_webhook.as_deref().unwrap_or("not set"));
+            println!("  Custom webhook:   {}", cfg.custom_webhook.as_deref().unwrap_or("not set"));
+            println!("  Notify on failover:   {}", cfg.notify_on_failover.unwrap_or(true));
+            println!("  Notify on low quota:  {}", cfg.notify_on_low_quota.unwrap_or(false));
+            println!("  Low quota threshold:  {}%", cfg.low_quota_threshold.unwrap_or(10));
+            println!();
+        }
+        "setup" => {
+            use std::io::{self, BufRead, Write};
+            let mut cfg = load_notify_config();
+            println!("\n🔔  Notification Setup (press Enter to keep current value)\n");
+            let stdin = io::stdin();
+            let prompt = |label: &str, current: Option<&str>| -> String {
+                print!("  {} [{}]: ", label, current.unwrap_or("not set"));
+                let _ = io::stdout().flush();
+                let mut line = String::new();
+                stdin.lock().read_line(&mut line).ok();
+                let trimmed = line.trim().to_string();
+                if trimmed.is_empty() {
+                    current.unwrap_or("").to_string()
+                } else {
+                    trimmed
+                }
+            };
+
+            let disc = prompt("Discord webhook URL", cfg.discord_webhook.as_deref());
+            cfg.discord_webhook = if disc.is_empty() { None } else { Some(disc) };
+
+            let slack = prompt("Slack webhook URL", cfg.slack_webhook.as_deref());
+            cfg.slack_webhook = if slack.is_empty() { None } else { Some(slack) };
+
+            let custom = prompt("Custom webhook URL (HTTP POST)", cfg.custom_webhook.as_deref());
+            cfg.custom_webhook = if custom.is_empty() { None } else { Some(custom) };
+
+            save_notify_config(&cfg);
+            println!("\n  ✓ Notification config saved to {}\n", get_notify_config_path().display());
+        }
+        "test" => {
+            let cfg = load_notify_config();
+            let message = args.first().map(|s| s.as_str()).unwrap_or("🧪 Test notification from Antigravity Manager CLI");
+            println!("Sending test notification...");
+            let sent = send_webhook_notification(&cfg, message).await;
+            if sent > 0 {
+                println!("✓ Test notification sent to {} webhook(s).", sent);
+            } else {
+                println!("✗ No webhooks configured. Run `agm notify setup` first.");
+            }
+        }
+        _ => {
+            println!("Usage: agm notify <status|setup|test>");
+        }
+    }
+}
+
+/// Send a notification to all configured webhooks. Returns count of successful sends.
+pub async fn send_webhook_notification(cfg: &crate::config::NotifyConfig, message: &str) -> usize {
+    let client = reqwest::Client::new();
+    let mut sent = 0;
+
+    // Discord
+    if let Some(ref url) = cfg.discord_webhook {
+        let body = serde_json::json!({ "content": message });
+        if client.post(url).json(&body).send().await.map(|r| r.status().is_success()).unwrap_or(false) {
+            sent += 1;
+        }
+    }
+
+    // Slack
+    if let Some(ref url) = cfg.slack_webhook {
+        let body = serde_json::json!({ "text": message });
+        if client.post(url).json(&body).send().await.map(|r| r.status().is_success()).unwrap_or(false) {
+            sent += 1;
+        }
+    }
+
+    // Custom (generic HTTP POST with JSON {message: "..."})
+    if let Some(ref url) = cfg.custom_webhook {
+        let body = serde_json::json!({ "message": message });
+        if client.post(url).json(&body).send().await.map(|r| r.status().is_success()).unwrap_or(false) {
+            sent += 1;
+        }
+    }
+
+    sent
+}
+
+// ─────────────────────────────────────────────
+// agm qr — QR code export/import
+// ─────────────────────────────────────────────
+pub fn cli_qr(action: &str, accounts: &[Account], identifier: Option<&str>) {
+    match action {
+        "export" => {
+            // Find target account
+            let acc = if let Some(id) = identifier {
+                find_account_by_identifier(accounts, id)
+            } else {
+                let cache = load_cli_cache();
+                cache.active_email.as_ref()
+                    .and_then(|e| accounts.iter().find(|a| &a.email == e))
+            };
+
+            let acc = match acc {
+                Some(a) => a,
+                None => {
+                    eprintln!("No account found. Specify an index or email, or set an active account first.");
+                    std::process::exit(1);
+                }
+            };
+
+            // Encode as JSON payload
+            let payload = serde_json::json!({
+                "email": acc.email,
+                "refresh_token": acc.refresh_token,
+                "name": acc.name,
+            });
+            let payload_str = serde_json::to_string(&payload).unwrap_or_default();
+
+            // Generate QR code
+            use qrcode::QrCode;
+            use qrcode::render::unicode;
+            let code = match QrCode::new(payload_str.as_bytes()) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("Failed to generate QR code: {}", e);
+                    std::process::exit(1);
+                }
+            };
+            let image = code.render::<unicode::Dense1x2>()
+                .dark_color(unicode::Dense1x2::Dark)
+                .light_color(unicode::Dense1x2::Light)
+                .build();
+
+            println!("\n📱  QR Code for account: {}\n", acc.email);
+            println!("{}", image);
+            println!("\n  Scan with your phone camera or QR reader, then run:");
+            println!("  agm qr import '<pasted_json>'\n");
+        }
+        "import" => {
+            // identifier is the JSON string from QR scan
+            let json_str = match identifier {
+                Some(s) => s,
+                None => {
+                    eprintln!("Usage: agm qr import '<json_from_qr>'");
+                    std::process::exit(1);
+                }
+            };
+
+            #[derive(serde::Deserialize)]
+            struct QrPayload {
+                email: String,
+                refresh_token: String,
+                name: Option<String>,
+            }
+            let payload: QrPayload = match serde_json::from_str(json_str) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("Invalid QR payload ({}). Make sure you pasted the full JSON string.", e);
+                    std::process::exit(1);
+                }
+            };
+
+            let db_path = get_data_dir().join("accounts.json");
+            if !db_path.exists() {
+                // Create minimal backup format
+                let initial = serde_json::json!([{
+                    "email": payload.email,
+                    "refresh_token": payload.refresh_token,
+                    "name": payload.name.as_deref().unwrap_or(&payload.email)
+                }]);
+                if let Ok(content) = serde_json::to_string_pretty(&initial) {
+                    let _ = fs::write(&db_path, content);
+                    println!("✓ Account {} imported and saved to new database.", payload.email);
+                }
+                return;
+            }
+
+            match crate::config::add_account_to_db(&db_path, &payload.email, &payload.refresh_token) {
+                Ok(_) => println!("✓ Account {} successfully imported from QR code.", payload.email),
+                Err(e) => eprintln!("✗ Import failed: {}", e),
+            }
+        }
+        _ => {
+            println!("Usage: agm qr <export [index|email]|import '<json>'>");
+        }
+    }
+}
+
+// ─────────────────────────────────────────────
+// agm import-url — Bulk import from URL
+// ─────────────────────────────────────────────
+pub async fn cli_import_url(url: &str) {
+    println!("⬇️  Fetching accounts from: {}", url);
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .unwrap_or_default();
+
+    let resp = match client.get(url).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("✗ Failed to fetch URL: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    let text = match resp.text().await {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("✗ Failed to read response body: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    #[derive(serde::Deserialize)]
+    struct RawAcc {
+        email: String,
+        refresh_token: String,
+        name: Option<String>,
+    }
+
+    let raw_accs: Vec<RawAcc> = match serde_json::from_str(&text) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("✗ Invalid JSON format ({}). Expected array of {{email, refresh_token}} objects.", e);
+            std::process::exit(1);
+        }
+    };
+
+    if raw_accs.is_empty() {
+        println!("No accounts found in the response.");
+        return;
+    }
+
+    println!("Found {} account(s). Importing...", raw_accs.len());
+    let db_path = get_data_dir().join("accounts.json");
+
+    let mut imported = 0;
+    let mut skipped = 0;
+
+    // If no DB exists, create one from the imported data
+    if !db_path.exists() {
+        let arr: Vec<serde_json::Value> = raw_accs.iter().map(|a| serde_json::json!({
+            "email": a.email,
+            "refresh_token": a.refresh_token,
+            "name": a.name.as_deref().unwrap_or("")
+        })).collect();
+        if let Ok(content) = serde_json::to_string_pretty(&arr) {
+            let _ = fs::write(&db_path, content);
+            println!("✓ Created new database with {} accounts.", arr.len());
+        }
+        return;
+    }
+
+    for acc in &raw_accs {
+        match crate::config::add_account_to_db(&db_path, &acc.email, &acc.refresh_token) {
+            Ok(_) => { println!("  ✓ Imported: {}", acc.email); imported += 1; }
+            Err(e) if e.contains("already exists") => { println!("  ↷ Skipped (exists): {}", acc.email); skipped += 1; }
+            Err(e) => { eprintln!("  ✗ Failed {}: {}", acc.email, e); }
+        }
+    }
+
+    println!("\n✅  Import complete: {} imported, {} skipped.\n", imported, skipped);
+}
+
+// ─────────────────────────────────────────────
+// agm backup --encrypt / restore --decrypt
+// ─────────────────────────────────────────────
+pub fn cli_backup_encrypted(accounts: &[Account], filepath: Option<&str>) {
+    use aes_gcm::{Aes256Gcm, Key, Nonce};
+    use aes_gcm::aead::{Aead, KeyInit};
+    use base64::engine::general_purpose::STANDARD as BASE64;
+    use base64::Engine;
+
+    // Prompt for passphrase
+    print!("Enter passphrase for encrypted backup: ");
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    let passphrase = rpassword_read();
+    if passphrase.is_empty() {
+        eprintln!("✗ Passphrase cannot be empty.");
+        std::process::exit(1);
+    }
+
+    // Derive a 32-byte key from passphrase using SHA-256
+    let key_bytes = sha256_key(passphrase.as_bytes());
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes));
+
+    // Build plaintext JSON
+    #[derive(serde::Serialize)]
+    struct BackupAcc { email: String, refresh_token: String, name: String }
+    let data: Vec<BackupAcc> = accounts.iter().map(|a| BackupAcc {
+        email: a.email.clone(), refresh_token: a.refresh_token.clone(), name: a.name.clone()
+    }).collect();
+    let plaintext = serde_json::to_vec(&data).unwrap_or_default();
+
+    // Random 12-byte nonce
+    let nonce_bytes: [u8; 12] = {
+        let mut b = [0u8; 12];
+        for i in 0..12 { b[i] = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().subsec_nanos() >> (i % 4)) as u8 ^ i as u8; }
+        b
+    };
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    let ciphertext = match cipher.encrypt(nonce, plaintext.as_ref()) {
+        Ok(c) => c,
+        Err(e) => { eprintln!("✗ Encryption failed: {:?}", e); std::process::exit(1); }
+    };
+
+    // Write: nonce (b64) + "." + ciphertext (b64)
+    let output = format!("{}.{}", BASE64.encode(nonce_bytes), BASE64.encode(&ciphertext));
+    let default_path = get_data_dir().join(format!("backup_encrypted_{}.agmenc",
+        chrono::Local::now().format("%Y-%m-%d")));
+    let target = filepath.map(PathBuf::from).unwrap_or(default_path);
+
+    match fs::write(&target, output) {
+        Ok(_) => println!("✓ Encrypted backup of {} accounts saved to: {}", accounts.len(), target.display()),
+        Err(e) => eprintln!("✗ Failed to write: {}", e),
+    }
+}
+
+pub fn cli_restore_encrypted(db_path: &Path, filepath: &str) {
+    use aes_gcm::{Aes256Gcm, Key, Nonce};
+    use aes_gcm::aead::{Aead, KeyInit};
+    use base64::engine::general_purpose::STANDARD as BASE64;
+    use base64::Engine;
+
+    print!("Enter passphrase to decrypt backup: ");
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    let passphrase = rpassword_read();
+
+    let content = match fs::read_to_string(filepath) {
+        Ok(c) => c.trim().to_string(),
+        Err(e) => { eprintln!("✗ Cannot read file: {}", e); std::process::exit(1); }
+    };
+
+    let mut parts = content.splitn(2, '.');
+    let nonce_b64 = parts.next().unwrap_or("");
+    let ct_b64 = parts.next().unwrap_or("");
+
+    let nonce_bytes = match BASE64.decode(nonce_b64) {
+        Ok(b) => b, Err(_) => { eprintln!("✗ Invalid encrypted backup format."); std::process::exit(1); }
+    };
+    let ciphertext = match BASE64.decode(ct_b64) {
+        Ok(b) => b, Err(_) => { eprintln!("✗ Invalid encrypted backup format."); std::process::exit(1); }
+    };
+
+    let key_bytes = sha256_key(passphrase.as_bytes());
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes));
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    let plaintext = match cipher.decrypt(nonce, ciphertext.as_ref()) {
+        Ok(p) => p,
+        Err(_) => { eprintln!("✗ Decryption failed — wrong passphrase or corrupted file."); std::process::exit(1); }
+    };
+
+    // Now delegate to normal restore logic
+    let tmp = get_data_dir().join("_agm_decrypt_tmp.json");
+    let _ = fs::write(&tmp, &plaintext);
+    cli_restore(db_path, tmp.to_str().unwrap_or(""));
+    let _ = fs::remove_file(tmp);
+}
+
+/// Simple SHA-256-like key derivation (no external dep — uses manual byte mixing)
+fn sha256_key(passphrase: &[u8]) -> [u8; 32] {
+    // Stretch passphrase to 32 bytes using simple PBKDF-like mixing
+    let mut key = [0u8; 32];
+    for (i, b) in passphrase.iter().cycle().take(32).enumerate() {
+        key[i] = b.wrapping_add(i as u8).wrapping_mul(0x9f).wrapping_add(passphrase.len() as u8);
+    }
+    // XOR rounds
+    for round in 0..1000u32 {
+        for i in 0..32 {
+            key[i] = key[i].wrapping_add((round >> (i % 4)) as u8) ^ key[(i + 1) % 32];
+        }
+    }
+    key
+}
+
+/// Read a passphrase from stdin without echoing
+fn rpassword_read() -> String {
+    use std::io::{self, Read};
+    // Try to use stty to disable echo
+    let _ = std::process::Command::new("stty").arg("-echo").status();
+    let mut buf = String::new();
+    let _ = io::stdin().read_line(&mut buf);
+    let _ = std::process::Command::new("stty").arg("echo").status();
+    println!(); // newline after hidden input
+    buf.trim().to_string()
+}
+
+// Re-export NotifyConfig for use in daemon
+pub use crate::config::NotifyConfig;

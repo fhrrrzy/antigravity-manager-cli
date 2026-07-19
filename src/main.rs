@@ -178,52 +178,99 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 cli::cli_remove(&accounts).await;
             }
             "backup" => {
-                let filepath = args.get(2).map(|s| s.as_str());
-                cli::cli_backup(&accounts, filepath);
+                let encrypt = args.iter().any(|a| a == "--encrypt");
+                let filepath = args.iter().skip(2).find(|a| !a.starts_with('-')).map(|s| s.as_str());
+                if encrypt {
+                    cli::cli_backup_encrypted(&accounts, filepath);
+                } else {
+                    cli::cli_backup(&accounts, filepath);
+                }
             }
             "restore" => {
                 if args.len() < 3 {
-                    eprintln!("Usage: agm restore <backup_file_path>");
+                    eprintln!("Usage: agm restore <backup_file_path> [--decrypt]");
                     std::process::exit(1);
                 }
+                let decrypt = args.iter().any(|a| a == "--decrypt");
                 let official_db_path = get_data_dir().join("accounts.json");
-                cli::cli_restore(&official_db_path, &args[2]);
+                if decrypt {
+                    cli::cli_restore_encrypted(&official_db_path, &args[2]);
+                } else {
+                    cli::cli_restore(&official_db_path, &args[2]);
+                }
+            }
+            "doctor" => {
+                cli::cli_doctor(&accounts).await;
+            }
+            "rotate" => {
+                let interval_mins: u64 = args.get(2)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(15);
+                cli::cli_rotate(interval_mins);
+            }
+            "completions" => {
+                let shell = args.get(2).map(|s| s.as_str()).unwrap_or("bash");
+                cli::cli_completions(shell);
+            }
+            "notify" => {
+                let action = args.get(2).map(|s| s.as_str()).unwrap_or("status");
+                let extra: Vec<String> = args.iter().skip(3).cloned().collect();
+                cli::cli_notify(action, &extra).await;
+            }
+            "qr" => {
+                let action = args.get(2).map(|s| s.as_str()).unwrap_or("export");
+                let identifier = args.get(3).map(|s| s.as_str());
+                cli::cli_qr(action, &accounts, identifier);
+            }
+            "import-url" | "import" => {
+                if args.len() < 3 {
+                    eprintln!("Usage: agm import-url <url>");
+                    std::process::exit(1);
+                }
+                cli::cli_import_url(&args[2]).await;
             }
             "help" | "-h" | "--help" => {
-                println!("Antigravity Manager (Rust Unified Edition)\n");
+                println!("Antigravity Manager CLI v{}\n", env!("CARGO_PKG_VERSION"));
                 println!("Usage:");
-                println!("  agm                   Launch interactive terminal user interface (TUI)");
-                println!("  agm list [--json]     List configured accounts (use --json for raw data)");
-                println!("  agm add               Interactively add a new account and refresh token");
-                println!("  agm remove            Interactively delete/remove an account from the database");
-                println!("  agm check             Verify credentials and plans for all accounts concurrently");
-                println!("  agm status [--json]   Get active account status and quotas (for tmux/sketchybar/prompts)");
-                println!("  agm daemon run [...]  Start background failover daemon (--quota gemini/claude/either, --interval secs)");
-                println!("  agm daemon start [...] Start background daemon in detached mode");
-                println!("  agm daemon stop       Stop the running background daemon process");
-                println!("  agm daemon status     Check if the background daemon is currently active");
-                println!("  agm switch [id]       Switch the active account (runs interactive selector if no ID given)");
-                println!("  agm auto-switch       Automatically switch to the healthiest/fullest standby account");
-                println!("  agm quota [id] [-r]   Display quotas (use --refresh to update, --json for raw data)");
-                println!("  agm quota all [-r]    Display/Refresh quotas for ALL accounts");
-                println!("  agm warmup [id] [flg] Run warmup cycles (use --model <name> or --force)");
-                println!("  agm warmup all        Sequentially warm up ALL configured accounts");
-                println!("  agm backup [path]     Backup all configured accounts to a JSON file");
-                println!("  agm restore <path>    Restore accounts from a JSON backup file");
+                println!("  agm                          Launch interactive TUI dashboard");
+                println!("  agm list [--json]            List configured accounts");
+                println!("  agm add                      Interactively add a new account");
+                println!("  agm remove                   Interactively remove an account");
+                println!("  agm check                    Verify credentials for all accounts concurrently");
+                println!("  agm status [--json]          Active account status (for tmux/polybar/sketchybar)");
+                println!("  agm switch [id]              Switch active account (interactive if no ID given)");
+                println!("  agm auto-switch              Switch to healthiest standby account");
+                println!("  agm quota [id|all] [-r]      Show quotas (--refresh to update, --json for raw)");
+                println!("  agm warmup [id|all]          Smart warmup cycles (--model <name>, --force)");
+                println!("  agm daemon start|stop|status Manage background failover daemon");
+                println!("  agm daemon run               Run daemon in foreground (--quota, --interval)");
+                println!("  agm backup [path]            Backup accounts to JSON");
+                println!("  agm backup --encrypt [path]  Backup with AES-256-GCM encryption");
+                println!("  agm restore <path>           Restore from JSON backup");
+                println!("  agm restore --decrypt <path> Restore from encrypted backup");
+                println!("  agm doctor                   Run environment diagnostics (token, network, files)");
+                println!("  agm rotate [mins]            Print crontab snippet for auto-rotation (default: 15m)");
+                println!("  agm completions <shell>      Print shell completions (bash/zsh/fish)");
+                println!("  agm notify setup             Configure Discord/Slack/custom webhook notifications");
+                println!("  agm notify test              Send a test notification");
+                println!("  agm notify status            Show current notification config");
+                println!("  agm qr export [id]           Export account as QR code for mobile transfer");
+                println!("  agm qr import '<json>'       Import account from scanned QR payload");
+                println!("  agm import-url <url>         Bulk import accounts from a JSON URL");
                 println!("\nExamples:");
                 println!("  agm switch 3");
-                println!("  agm switch");
-                println!("  agm add");
-                println!("  agm remove");
-                println!("  agm status");
-                println!("  agm daemon start --quota gemini --interval 300");
-                println!("  agm daemon stop");
-                println!("  agm daemon status");
-                println!("  agm auto-switch");
                 println!("  agm quota all --refresh --json");
                 println!("  agm warmup all");
-                println!("  agm backup ~/my_backup.json");
-                println!("  agm restore ~/my_backup.json");
+                println!("  agm daemon start --quota gemini --interval 300");
+                println!("  agm backup --encrypt ~/secure_backup.agmenc");
+                println!("  agm doctor");
+                println!("  agm rotate 30");
+                println!("  agm completions bash >> ~/.bashrc");
+                println!("  agm completions zsh > ~/.zsh/completions/_agm");
+                println!("  agm notify setup");
+                println!("  agm qr export 1");
+                println!("  agm import-url https://gist.githubusercontent.com/.../accounts.json");
+                println!("\n  Quick install: curl -fsSL https://raw.githubusercontent.com/fhrrrzy/antigravity-manager-cli/main/install-quick.sh | bash");
             }
             _ => {
                 eprintln!("Unknown command '{}'. Type 'agm --help' for help.", subcommand);

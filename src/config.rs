@@ -455,3 +455,57 @@ pub fn load_monitored_models() -> Vec<String> {
     ]
 }
 
+// Load configurable warmup/quota batch size from gui_config.json
+// Falls back to default of 3 if not set.
+pub fn load_batch_size() -> usize {
+    let path = get_data_dir().join("gui_config.json");
+    if path.exists() {
+        if let Ok(content) = fs::read_to_string(&path) {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(bs) = val.get("batch_size").and_then(|v| v.as_u64()) {
+                    let size = bs as usize;
+                    if size >= 1 && size <= 20 {
+                        return size;
+                    }
+                }
+            }
+        }
+    }
+    3 // default
+}
+
+// Notify config: webhook URLs for Discord/Slack/custom HTTP
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
+pub struct NotifyConfig {
+    pub discord_webhook: Option<String>,
+    pub slack_webhook: Option<String>,
+    pub custom_webhook: Option<String>,
+    pub notify_on_failover: Option<bool>,
+    pub notify_on_low_quota: Option<bool>,
+    pub low_quota_threshold: Option<i32>,
+}
+
+pub fn get_notify_config_path() -> PathBuf {
+    get_data_dir().join("notify.json")
+}
+
+pub fn load_notify_config() -> NotifyConfig {
+    let path = get_notify_config_path();
+    if path.exists() {
+        if let Ok(content) = fs::read_to_string(&path) {
+            if let Ok(cfg) = serde_json::from_str::<NotifyConfig>(&content) {
+                return cfg;
+            }
+        }
+    }
+    NotifyConfig::default()
+}
+
+pub fn save_notify_config(cfg: &NotifyConfig) {
+    let path = get_notify_config_path();
+    if let Ok(content) = serde_json::to_string_pretty(cfg) {
+        let _ = fs::write(&path, content);
+    }
+}
+
+
