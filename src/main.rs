@@ -1457,11 +1457,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 AppEvent::NetworkSuccess(result) => {
                     app.is_loading = false;
-                    app.cli_cache = config::load_cli_cache();
+                    // NOTE: Do NOT blanket-reload cli_cache from disk here.
+                    // With concurrent batch events, multiple NetworkSuccess events fire
+                    // rapidly. Reloading from disk mid-stream causes N/A display glitches
+                    // because the file may be partially written by another event's save.
+                    // Instead, update app.cli_cache in-place from the event payload.
                     match result {
                         NetworkResult::AddAccountComplete { new_account } => {
                             app.input_mode = InputMode::Normal;
-                            
+                            // AddAccountComplete changes the DB file on disk, so reload is safe here.
+                            app.cli_cache = config::load_cli_cache();
                             let (reload_accs, _, _) = load_accounts_list();
                             app.accounts = reload_accs;
                             app.sort_accounts();
@@ -1505,6 +1510,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                         NetworkResult::QuotaRefreshed { email, quota, project_id } => {
+                            // Update in-place — avoid disk read to prevent N/A from race conditions
                             if let Some(pid) = project_id {
                                 if let Some(tc) = app.cli_cache.tokens.get_mut(&email) {
                                     tc.project_id = Some(pid);
