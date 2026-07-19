@@ -2,6 +2,8 @@
 
 A high-performance command-line utility and terminal user interface (TUI) written in Rust to manage accounts, monitor Google Companion API quotas, and coordinate smart session warmups for the Antigravity system. 
 
+![Antigravity Manager TUI Dashboard](assets/screenshot.png)
+
 It provides seamless integration for developer workflows, supporting both an interactive dashboard for manual operations and a scriptable CLI for background automation.
 
 ---
