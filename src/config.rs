@@ -100,44 +100,94 @@ pub fn save_warmup_history(history: &HashMap<String, i64>) {
     }
 }
 
-// Load accounts index or backup
-pub fn load_accounts_list() -> (Vec<Account>, PathBuf, String) {
-    let backup_paths = [
-        "/data/data/com.termux/files/home/.antigravity_tools/antigravity_accounts_2026-07-17.json",
-        "/home/fhrrrzy/Downloads/antigravity_accounts_2026-07-17.json",
-    ];
+// Helper to find the newest backup file matching antigravity_accounts_*.json
+fn find_newest_backup() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
 
-    for path_str in backup_paths.iter() {
-        let path = PathBuf::from(path_str);
-        if path.exists() {
-            if let Ok(content) = fs::read_to_string(&path) {
-                #[derive(serde::Deserialize)]
-                struct RawBackupAcc {
-                    email: String,
-                    refresh_token: String,
-                    name: Option<String>,
+    // 1. Check in ~/.antigravity_tools
+    let data_dir = get_data_dir();
+    if let Ok(entries) = fs::read_dir(&data_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(filename) = path.file_name().and_then(|f| f.to_str()) {
+                if filename.starts_with("antigravity_accounts_") && filename.ends_with(".json") {
+                    candidates.push(path);
                 }
-                if let Ok(raw_accs) = serde_json::from_str::<Vec<RawBackupAcc>>(&content) {
-                    let mut accounts = Vec::new();
-                    for item in raw_accs {
-                        let default_name = item.email.split('@').next().unwrap_or("").to_string();
-                        let file_name = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| "backup".to_string());
-                        accounts.push(Account {
-                            name: item.name.unwrap_or(default_name),
-                            email: item.email,
-                            refresh_token: item.refresh_token,
-                            source: format!("backup ({})", file_name),
-                            id: None,
-                        });
-                    }
-                    if !accounts.is_empty() {
-                        let file_name = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| "backup".to_string());
-                        return (accounts, path.clone(), format!("Backup file '{}'", file_name));
+            }
+        }
+    }
+
+    // 2. Check in ~/Downloads
+    if let Some(home) = dirs::home_dir() {
+        let downloads = home.join("Downloads");
+        if let Ok(entries) = fs::read_dir(downloads) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if let Some(filename) = path.file_name().and_then(|f| f.to_str()) {
+                    if filename.starts_with("antigravity_accounts_") && filename.ends_with(".json") {
+                        candidates.push(path);
                     }
                 }
             }
         }
     }
+
+    // 3. Also check the hardcoded termux path prefix
+    let termux_tools = PathBuf::from("/data/data/com.termux/files/home/.antigravity_tools");
+    if termux_tools.exists() {
+        if let Ok(entries) = fs::read_dir(termux_tools) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if let Some(filename) = path.file_name().and_then(|f| f.to_str()) {
+                    if filename.starts_with("antigravity_accounts_") && filename.ends_with(".json") {
+                        candidates.push(path);
+                    }
+                }
+            }
+        }
+    }
+
+    // Sort alphabetically (which sorts YYYY-MM-DD correctly)
+    candidates.sort_by(|a, b| {
+        let a_name = a.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let b_name = b.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        a_name.cmp(b_name)
+    });
+
+    candidates.pop() // Get the last one (newest)
+}
+
+// Load accounts index or backup
+pub fn load_accounts_list() -> (Vec<Account>, PathBuf, String) {
+    if let Some(path) = find_newest_backup() {
+        if let Ok(content) = fs::read_to_string(&path) {
+            #[derive(serde::Deserialize)]
+            struct RawBackupAcc {
+                email: String,
+                refresh_token: String,
+                name: Option<String>,
+            }
+            if let Ok(raw_accs) = serde_json::from_str::<Vec<RawBackupAcc>>(&content) {
+                let mut accounts = Vec::new();
+                for item in raw_accs {
+                    let default_name = item.email.split('@').next().unwrap_or("").to_string();
+                    let file_name = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| "backup".to_string());
+                    accounts.push(Account {
+                        name: item.name.unwrap_or(default_name),
+                        email: item.email,
+                        refresh_token: item.refresh_token,
+                        source: format!("backup ({})", file_name),
+                        id: None,
+                    });
+                }
+                if !accounts.is_empty() {
+                    let file_name = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| "backup".to_string());
+                    return (accounts, path.clone(), format!("Backup file '{}'", file_name));
+                }
+            }
+        }
+    }
+
 
     let data_dir = get_data_dir();
     let index_path = data_dir.join("accounts.json");
@@ -378,3 +428,30 @@ pub fn delete_account_from_db(path: &Path, email: &str) -> Result<(), String> {
     
     Err("Unknown/Unsupported database format.".to_string())
 }
+
+// Load monitored models list from gui_config.json
+pub fn load_monitored_models() -> Vec<String> {
+    let path = get_data_dir().join("gui_config.json");
+    if path.exists() {
+        if let Ok(content) = fs::read_to_string(&path) {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(monitored) = val.get("scheduled_warmup")
+                    .and_then(|sw| sw.get("monitored_models"))
+                    .and_then(|mm| mm.as_array())
+                {
+                    return monitored.iter()
+                        .filter_map(|m| m.as_str().map(|s| s.to_string()))
+                        .collect();
+                }
+            }
+        }
+    }
+    // Fallback default list
+    vec![
+        "gemini-3-flash".to_string(),
+        "claude".to_string(),
+        "gemini-3-pro-high".to_string(),
+        "gemini-3-pro-image".to_string(),
+    ]
+}
+

@@ -186,7 +186,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     eprintln!("Usage: agm restore <backup_file_path>");
                     std::process::exit(1);
                 }
-                cli::cli_restore(&db_path, &args[2]);
+                let official_db_path = get_data_dir().join("accounts.json");
+                cli::cli_restore(&official_db_path, &args[2]);
             }
             "help" | "-h" | "--help" => {
                 println!("Antigravity Manager (Rust Unified Edition)\n");

@@ -12,7 +12,7 @@ use crate::types::{
     Account, CliCache, InputMode, SortMode, Focus, ThemeType, AppEvent, NetworkResult,
     QuotaData, COOLDOWN_SECONDS, TokenCache, LayoutPreset
 };
-use crate::config::{get_data_dir, save_cli_cache, load_warmup_history, add_account_to_db, save_warmup_history, record_health_failure};
+use crate::config::{get_data_dir, save_cli_cache, load_warmup_history, add_account_to_db, save_warmup_history, record_health_failure, load_monitored_models};
 use crate::google_api::{
     ensure_valid_token, async_fetch_project_and_tier, async_fetch_quota_summary,
     async_fetch_quota, async_trigger_warmup, listen_for_oauth_code, exchange_oauth_code, fetch_user_email,
@@ -619,38 +619,76 @@ pub fn spawn_network_task(
                 }
             }
             "quota_all" => {
-                for acc in accounts_all {
+                let mut prepared_accounts = Vec::new();
+
+                // 1. Get tokens sequentially (fast, handles cache/keys safely)
+                for acc in &accounts_all {
                     let email = acc.email.clone();
-                    let _ = event_tx.send(AppEvent::Progress(format!("Refreshing quota statistics for {}...", email)));
-                    
-                    if let Some((access_token, mut project_id)) = ensure_valid_token(&email, &acc.refresh_token, &mut cli_cache).await {
-                        let (api_proj, tier) = async_fetch_project_and_tier(&access_token).await;
-                        if api_proj.is_some() {
-                            project_id = api_proj.clone();
-                            if let Some(tc) = cli_cache.tokens.get_mut(&email) {
-                                tc.project_id = api_proj;
-                                tc.subscription_tier = tier.clone();
-                            }
-                        }
+                    if let Some((access_token, project_id)) = ensure_valid_token(&email, &acc.refresh_token, &mut cli_cache).await {
+                        prepared_accounts.push((acc.clone(), access_token, project_id));
+                    }
+                }
+
+                // 2. Fetch project details and quotas concurrently in batches of 3
+                let batch_size = 3;
+                let mut results = Vec::new();
+                
+                for chunk in prepared_accounts.chunks(batch_size) {
+                    let mut handles = Vec::new();
+                    for (acc, access_token, project_id) in chunk {
+                        let email = acc.email.clone();
+                        let access_token = access_token.clone();
+                        let project_id = project_id.clone();
+                        let event_tx_clone = event_tx.clone();
                         
-                        let summary = async_fetch_quota_summary(&access_token, project_id.as_deref()).await;
-                        if let Ok(models) = async_fetch_quota(&access_token, project_id.as_deref()).await {
-                            let quota_data = QuotaData {
-                                subscription_tier: tier,
-                                models,
-                                quota_groups: summary,
-                            };
-                            cli_cache.quotas.insert(email.clone(), quota_data.clone());
-                            save_cli_cache(&cli_cache);
-                            let _ = event_tx.send(AppEvent::NetworkSuccess(NetworkResult::QuotaRefreshed {
-                                email,
-                                quota: quota_data,
-                                project_id,
-                            }));
+                        let _ = event_tx_clone.send(AppEvent::Progress(format!("Refreshing quota statistics for {}...", email)));
+                        
+                        let handle = tokio::spawn(async move {
+                            let (api_proj, tier) = async_fetch_project_and_tier(&access_token).await;
+                            let mut resolved_proj = project_id.clone();
+                            if api_proj.is_some() {
+                                resolved_proj = api_proj.clone();
+                            }
+                            let summary = async_fetch_quota_summary(&access_token, resolved_proj.as_deref()).await;
+                            let quota_res = async_fetch_quota(&access_token, resolved_proj.as_deref()).await;
+                            (email, api_proj, tier, summary, quota_res, resolved_proj)
+                        });
+                        handles.push(handle);
+                    }
+                    
+                    for h in handles {
+                        if let Ok(res) = h.await {
+                            results.push(res);
                         }
                     }
-                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    
+                    tokio::time::sleep(Duration::from_millis(1500)).await;
                 }
+
+                // 3. Write results back to cache sequentially
+                for (email, api_proj, tier, summary, quota_res, project_id) in results {
+                    if api_proj.is_some() {
+                        if let Some(tc) = cli_cache.tokens.get_mut(&email) {
+                            tc.project_id = api_proj;
+                            tc.subscription_tier = tier.clone();
+                        }
+                    }
+                    if let Ok(models) = quota_res {
+                        let quota_data = QuotaData {
+                            subscription_tier: tier,
+                            models,
+                            quota_groups: summary,
+                        };
+                        cli_cache.quotas.insert(email.clone(), quota_data.clone());
+                        save_cli_cache(&cli_cache);
+                        let _ = event_tx.send(AppEvent::NetworkSuccess(NetworkResult::QuotaRefreshed {
+                            email,
+                            quota: quota_data,
+                            project_id,
+                        }));
+                    }
+                }
+
                 let _ = event_tx.send(AppEvent::Progress("All accounts quotas reloaded.".to_string()));
             }
             "warmup" => {
@@ -689,9 +727,17 @@ pub fn spawn_network_task(
                         });
                     }
                 } else {
+                    let monitored = load_monitored_models();
                     for m in models.iter() {
                         if m.percentage >= 100 {
-                            to_warm.push(m.clone());
+                            let is_monitored = monitored.iter().any(|mon_m| {
+                                let mon_lower = mon_m.to_lowercase();
+                                let m_lower = m.name.to_lowercase();
+                                m_lower.contains(&mon_lower) || mon_lower.contains(&m_lower)
+                            });
+                            if is_monitored {
+                                to_warm.push(m.clone());
+                            }
                         }
                     }
                 }
@@ -701,7 +747,7 @@ pub fn spawn_network_task(
                         email,
                         warmup_count: 0,
                         skipped_count: 0,
-                        logs: vec!["All models have remaining quotas, no warmup needed.".to_string()],
+                        logs: vec!["All monitored models have remaining quotas, no warmup needed.".to_string()],
                     }));
                     return;
                 }
@@ -711,9 +757,10 @@ pub fn spawn_network_task(
                 let mut logs = Vec::new();
                 let mut record_success_models = Vec::new();
                 
+                let mut eligible_models = Vec::new();
                 for m in to_warm {
-                    let name = m.name;
-                    let display = m.display_name.unwrap_or_else(|| name.clone());
+                    let name = m.name.clone();
+                    let display = m.display_name.clone().unwrap_or_else(|| name.clone());
                     
                     if name.contains("2.5-") || name.contains("2-5-") {
                         logs.push(format!("Skipped {}: 2.5 series not supported.", display));
@@ -726,26 +773,53 @@ pub fn spawn_network_task(
                         if let Some(&last_ts) = warmup_history.get(&key) {
                             let elapsed = now - last_ts;
                             if elapsed < COOLDOWN_SECONDS {
-                                logs.push(format!("Skipped {}: Cooling down ({}h {}m left).", display, (COOLDOWN_SECONDS - elapsed) / 3600, ((COOLDOWN_SECONDS - elapsed) % 3600) / 60));
+                                let rem = COOLDOWN_SECONDS - elapsed;
+                                logs.push(format!("Skipped {}: Cooling down ({}h {}m left).", display, rem / 3600, (rem % 3600) / 60));
                                 skipped_count += 1;
                                 continue;
                             }
                         }
                     }
+                    eligible_models.push(m);
+                }
+
+                // Process in batches of 3 concurrently
+                let batch_size = 3;
+                for chunk in eligible_models.chunks(batch_size) {
+                    let mut handles = Vec::new();
+                    for m in chunk {
+                        let name = m.name.clone();
+                        let display = m.display_name.clone().unwrap_or_else(|| name.clone());
+                        let token_clone = access_token.clone();
+                        let proj_clone = resolved_proj_id.clone();
+                        let email_clone = email.clone();
+                        
+                        let _ = event_tx.send(AppEvent::Progress(format!("Warming up model {}...", display)));
+                        
+                        let handle = tokio::spawn(async move {
+                            let res = async_trigger_warmup(&token_clone, &name, proj_clone.as_deref(), &email_clone).await;
+                            (res, name)
+                        });
+                        handles.push(handle);
+                    }
                     
-                    let _ = event_tx.send(AppEvent::Progress(format!("Warming up model {}...", display)));
-                    match async_trigger_warmup(&access_token, &name, resolved_proj_id.as_deref(), &email).await {
-                        Ok(_) => {
-                            logs.push(format!("✓ Warmup successful for {}!", display));
-                            warmup_count += 1;
-                            record_success_models.push(name);
-                        }
-                        Err(e) => {
-                            logs.push(format!("✗ Warmup failed for {}: {}", display, e));
+                    for h in handles {
+                        if let Ok((res, name)) = h.await {
+                            let display = name.clone();
+                            match res {
+                                Ok(_) => {
+                                    logs.push(format!("✓ Warmup successful for {}!", display));
+                                    warmup_count += 1;
+                                    record_success_models.push(name);
+                                }
+                                Err(e) => {
+                                    logs.push(format!("✗ Warmup failed for {}: {}", display, e));
+                                }
+                            }
                         }
                     }
                     
-                    tokio::time::sleep(Duration::from_millis(800)).await;
+                    tokio::time::sleep(Duration::from_millis(1500)).await;
                 }
                 
                 let _ = event_tx.send(AppEvent::NetworkSuccess(NetworkResult::WarmupComplete {
@@ -786,21 +860,28 @@ pub fn spawn_network_task(
                     }
                     
                     let mut to_warm = Vec::new();
+                    let monitored = load_monitored_models();
                     for m in &models {
                         if m.percentage >= 100 {
-                            to_warm.push(m.clone());
+                            let is_monitored = monitored.iter().any(|mon_m| {
+                                let mon_lower = mon_m.to_lowercase();
+                                let m_lower = m.name.to_lowercase();
+                                m_lower.contains(&mon_lower) || mon_lower.contains(&m_lower)
+                            });
+                            if is_monitored {
+                                to_warm.push(m.clone());
+                            }
                         }
                     }
                     
                     if to_warm.is_empty() {
-                        total_logs.push(format!("✓ {}: All models have remaining usage.", email));
+                        total_logs.push(format!("✓ {}: All monitored models have remaining usage.", email));
                         continue;
                     }
                     
+                    let mut eligible_models = Vec::new();
                     for m in to_warm {
-                        let name = m.name;
-                        let display = m.display_name.unwrap_or_else(|| name.clone());
-                        
+                        let name = m.name.clone();
                         if name.contains("2.5-") || name.contains("2-5-") {
                             continue;
                         }
@@ -815,23 +896,49 @@ pub fn spawn_network_task(
                                 }
                             }
                         }
+                        eligible_models.push(m);
+                    }
+
+                    // Process in concurrent batches of 3
+                    let batch_size = 3;
+                    for chunk in eligible_models.chunks(batch_size) {
+                        let mut handles = Vec::new();
+                        for m in chunk {
+                            let name = m.name.clone();
+                            let display = m.display_name.clone().unwrap_or_else(|| name.clone());
+                            let token_clone = access_token.clone();
+                            let proj_clone = resolved_proj_id.clone();
+                            let email_clone = email.clone();
+                            
+                            let _ = event_tx.send(AppEvent::Progress(format!("[{}/{}] Warmup {} on {}...", idx + 1, count_accs, display, email_clone)));
+                            
+                            let handle = tokio::spawn(async move {
+                                let res = async_trigger_warmup(&token_clone, &name, proj_clone.as_deref(), &email_clone).await;
+                                (res, name)
+                            });
+                            handles.push(handle);
+                        }
                         
-                        let _ = event_tx.send(AppEvent::Progress(format!("[{}/{}] Warmup {} on {}...", idx + 1, count_accs, display, email)));
-                        match async_trigger_warmup(&access_token, &name, resolved_proj_id.as_deref(), email).await {
-                            Ok(_) => {
-                                total_logs.push(format!("✓ {} [{}]: Warmup successful!", email, display));
-                                total_warmups += 1;
-                                
-                                let mut history = load_warmup_history();
-                                let key = format!("{}:{}:100", email, name);
-                                history.insert(key, chrono::Utc::now().timestamp());
-                                save_warmup_history(&history);
-                            }
-                            Err(e) => {
-                                total_logs.push(format!("✗ {} [{}]: Failed: {}", email, display, e));
+                        for h in handles {
+                            if let Ok((res, name)) = h.await {
+                                let display = name.clone();
+                                match res {
+                                    Ok(_) => {
+                                        total_logs.push(format!("✓ {} [{}]: Warmup successful!", email, display));
+                                        total_warmups += 1;
+                                        
+                                        let mut history = load_warmup_history();
+                                        let key = format!("{}:{}:100", email, name);
+                                        history.insert(key, chrono::Utc::now().timestamp());
+                                        save_warmup_history(&history);
+                                    }
+                                    Err(e) => {
+                                        total_logs.push(format!("✗ {} [{}]: Failed: {}", email, display, e));
+                                    }
+                                }
                             }
                         }
-                        tokio::time::sleep(Duration::from_millis(800)).await;
+                        tokio::time::sleep(Duration::from_millis(1500)).await;
                     }
                 }
                 

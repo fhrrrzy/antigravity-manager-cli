@@ -8,7 +8,8 @@ use serde_json::json;
 use crate::types::{Account, JsonAccountInfo, JsonQuotaOutput, QuotaData, ModelQuota, COOLDOWN_SECONDS};
 use crate::config::{
     load_cli_cache, save_cli_cache, get_data_dir, add_account_to_db,
-    load_warmup_history, save_warmup_history, delete_account_from_db
+    load_warmup_history, save_warmup_history, delete_account_from_db,
+    load_monitored_models
 };
 use crate::google_api::{ensure_valid_token, async_fetch_project_and_tier, async_fetch_quota_summary, async_fetch_quota, async_trigger_warmup};
 use crate::keyring::{write_to_system_keyring, write_oauth_token_file};
@@ -715,9 +716,9 @@ pub async fn cli_quota(accounts: &[Account], active_email: Option<&str>, identif
 
 pub async fn cli_warmup(accounts: &[Account], active_email: Option<&str>, identifier: Option<&str>, model_name: Option<&str>, force: bool) {
     if identifier == Some("all") {
-        println!("Running Warm Up cycle for ALL configured accounts sequentially...");
+        println!("Running Warm Up cycle for ALL configured accounts concurrently in batches...");
         let mut cache = load_cli_cache();
-        let mut history = load_warmup_history();
+        let history = load_warmup_history();
         let now = chrono::Utc::now().timestamp();
         let count_accs = accounts.len();
         
@@ -749,26 +750,36 @@ pub async fn cli_warmup(accounts: &[Account], active_email: Option<&str>, identi
             }
             
             let mut to_warm = Vec::new();
+            let monitored = load_monitored_models();
             for m in &models {
                 if m.percentage >= 100 {
-                    to_warm.push(m.clone());
+                    let is_monitored = monitored.iter().any(|mon_m| {
+                        let mon_lower = mon_m.to_lowercase();
+                        let m_lower = m.name.to_lowercase();
+                        m_lower.contains(&mon_lower) || mon_lower.contains(&m_lower)
+                    });
+                    if is_monitored {
+                        to_warm.push(m.clone());
+                    }
                 }
             }
             
             if to_warm.is_empty() {
-                println!("✓ All models have remaining usage. No warmup needed.");
+                println!("✓ All monitored models have remaining usage. No warmup needed.");
                 continue;
             }
             
+            let mut eligible_models = Vec::new();
             for m in to_warm {
-                let display = m.display_name.as_deref().unwrap_or(&m.name);
+                let name = m.name.clone();
+                let display = m.display_name.clone().unwrap_or_else(|| name.clone());
                 
-                if m.name.contains("2.5-") || m.name.contains("2-5-") {
+                if name.contains("2.5-") || name.contains("2-5-") {
                     continue;
                 }
                 
                 if !force {
-                    let key = format!("{}:{}:100", email, m.name);
+                    let key = format!("{}:{}:100", email, name);
                     if let Some(&last) = history.get(&key) {
                         let elapsed = now - last;
                         if elapsed < COOLDOWN_SECONDS {
@@ -778,20 +789,46 @@ pub async fn cli_warmup(accounts: &[Account], active_email: Option<&str>, identi
                         }
                     }
                 }
+                eligible_models.push(m);
+            }
+
+            // Concurrent batches of 3
+            let batch_size = 3;
+            for chunk in eligible_models.chunks(batch_size) {
+                let mut handles = Vec::new();
+                for m in chunk {
+                    let name = m.name.clone();
+                    let display = m.display_name.clone().unwrap_or_else(|| name.clone());
+                    let token_clone = access_token.clone();
+                    let proj_clone = project_id.clone();
+                    let email_clone = email.to_string();
+                    
+                    println!("Warming up model {}...", display);
+                    let handle = tokio::spawn(async move {
+                        let res = async_trigger_warmup(&token_clone, &name, proj_clone.as_deref(), &email_clone).await;
+                        (res, name)
+                    });
+                    handles.push(handle);
+                }
                 
-                println!("Warming up model {}...", display);
-                match async_trigger_warmup(&access_token, &m.name, project_id.as_deref(), email).await {
-                    Ok(_) => {
-                        println!("✓ Successfully warmed up {}!", display);
-                        let key = format!("{}:{}:100", email, m.name);
-                        history.insert(key, chrono::Utc::now().timestamp());
-                        save_warmup_history(&history);
-                    }
-                    Err(e) => {
-                        println!("✗ Warmup failed for {}: {}", display, e);
+                for h in handles {
+                    if let Ok((res, name)) = h.await {
+                        let display = name.clone();
+                        match res {
+                            Ok(_) => {
+                                println!("✓ Successfully warmed up {}!", display);
+                                let mut hist = load_warmup_history();
+                                let key = format!("{}:{}:100", email, name);
+                                hist.insert(key, chrono::Utc::now().timestamp());
+                                save_warmup_history(&hist);
+                            }
+                            Err(e) => {
+                                println!("✗ Warmup failed for {}: {}", display, e);
+                            }
+                        }
                     }
                 }
-                tokio::time::sleep(Duration::from_millis(800)).await;
+                tokio::time::sleep(Duration::from_millis(1500)).await;
             }
         }
         println!("\nWarmup cycle for all accounts completed.");
@@ -820,7 +857,7 @@ pub async fn cli_warmup(accounts: &[Account], active_email: Option<&str>, identi
         std::process::exit(1);
     };
     let mut cache = load_cli_cache();
-    let mut history = load_warmup_history();
+    let history = load_warmup_history();
     let now = chrono::Utc::now().timestamp();
     
     let (access_token, mut project_id) = match ensure_valid_token(target_email, &acc.refresh_token, &mut cache).await {
@@ -860,19 +897,28 @@ pub async fn cli_warmup(accounts: &[Account], active_email: Option<&str>, identi
             });
         }
     } else {
+        let monitored = load_monitored_models();
         for m in &models {
             if m.percentage >= 100 {
-                to_warm.push(m.clone());
+                let is_monitored = monitored.iter().any(|mon_m| {
+                    let mon_lower = mon_m.to_lowercase();
+                    let m_lower = m.name.to_lowercase();
+                    m_lower.contains(&mon_lower) || mon_lower.contains(&m_lower)
+                });
+                if is_monitored {
+                    to_warm.push(m.clone());
+                }
             }
         }
     }
     
     if to_warm.is_empty() {
-        println!("All models have remaining quotas. No warmup needed.");
+        println!("All monitored models have remaining quotas. No warmup needed.");
         return;
     }
     
     let mut count = 0;
+    let mut eligible_models = Vec::new();
     for m in to_warm {
         let display = m.display_name.as_deref().unwrap_or(&m.name);
         
@@ -892,22 +938,47 @@ pub async fn cli_warmup(accounts: &[Account], active_email: Option<&str>, identi
                 }
             }
         }
-        
-        println!("Warming up model {}...", display);
-        match async_trigger_warmup(&access_token, &m.name, project_id.as_deref(), target_email).await {
-            Ok(_) => {
-                println!("✓ Successfully warmed up {}!", display);
-                let key = format!("{}:{}:100", target_email, m.name);
-                history.insert(key, chrono::Utc::now().timestamp());
-                save_warmup_history(&history);
-                count += 1;
-            }
-            Err(e) => {
-                println!("✗ Warmup failed for {}: {}", display, e);
-            }
+        eligible_models.push(m);
+    }
+    
+    // Concurrent batches of 3
+    let batch_size = 3;
+    for chunk in eligible_models.chunks(batch_size) {
+        let mut handles = Vec::new();
+        for m in chunk {
+            let name = m.name.clone();
+            let display = m.display_name.clone().unwrap_or_else(|| name.clone());
+            let token_clone = access_token.clone();
+            let proj_clone = project_id.clone();
+            let email_clone = target_email.to_string();
+            
+            println!("Warming up model {}...", display);
+            let handle = tokio::spawn(async move {
+                let res = async_trigger_warmup(&token_clone, &name, proj_clone.as_deref(), &email_clone).await;
+                (res, name)
+            });
+            handles.push(handle);
         }
         
-        tokio::time::sleep(Duration::from_millis(800)).await;
+        for h in handles {
+            if let Ok((res, name)) = h.await {
+                let display = name.clone();
+                match res {
+                    Ok(_) => {
+                        println!("✓ Successfully warmed up {}!", display);
+                        let mut hist = load_warmup_history();
+                        let key = format!("{}:{}:100", target_email, name);
+                        hist.insert(key, chrono::Utc::now().timestamp());
+                        save_warmup_history(&hist);
+                        count += 1;
+                    }
+                    Err(e) => {
+                        println!("✗ Warmup failed for {}: {}", display, e);
+                    }
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(1500)).await;
     }
     println!("Warmup cycle finished. Triggered {} warmup(s).", count);
 }
