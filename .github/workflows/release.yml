@@ -37,7 +37,7 @@ jobs:
         run: cargo build --release
         
       - name: Rename Binary
-        run: mv target/release/agm target/release/${{ matrix.asset_name }}
+        run: mv target/release/antigravity-manager-tui target/release/${{ matrix.asset_name }}
         
       - name: Upload Artifact
         uses: actions/upload-artifact@v4

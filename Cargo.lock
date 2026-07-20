@@ -69,7 +69,7 @@ checksum = "4d032745fe46100dbcb28ee6e30f12c4b148786f8889e07cd0a3445eeb54970f"
 
 [[package]]
 name = "antigravity-manager-tui"
-version = "1.4.0"
+version = "1.5.0"
 dependencies = [
  "aes-gcm",
  "base64 0.21.7",
