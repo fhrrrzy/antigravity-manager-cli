@@ -21,7 +21,7 @@ use ratatui::{
 };
 use serde_json::json;
 
-use types::{AppEvent, InputMode, Focus, SortMode, NetworkResult, AddAccountAction, LayoutPreset, ConfigOption, ThemeType};
+use types::{AppEvent, InputMode, Focus, SortMode, TabMode, NetworkResult, AddAccountAction, LayoutPreset, ConfigOption, ThemeType};
 use config::{load_accounts_list, get_active_email, load_cli_cache, load_warmup_history, get_data_dir, save_cli_cache, delete_account_from_db};
 use tui::{App, spawn_network_task, ui::draw_ui};
 
@@ -1061,6 +1061,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
 
                     match key.code {
+                        KeyCode::Tab => {
+                            if !app.is_loading {
+                                app.active_tab = match app.active_tab {
+                                    TabMode::Accounts => TabMode::Analytics,
+                                    TabMode::Analytics => TabMode::Accounts,
+                                    _ => TabMode::Accounts,
+                                };
+                                let name = match app.active_tab {
+                                    TabMode::Accounts => "Accounts Summary List",
+                                    TabMode::Analytics => "Quota Analytics & Reset Countdowns",
+                                    _ => "Accounts Summary List",
+                                };
+                                app.set_status(&format!("Switched view tab to: {}", name));
+                            }
+                        }
+                        KeyCode::Char('1') => {
+                            if !app.is_loading {
+                                app.active_tab = TabMode::Accounts;
+                                app.set_status("Switched view tab to: Accounts Summary List");
+                            }
+                        }
+                        KeyCode::Char('2') => {
+                            if !app.is_loading {
+                                app.active_tab = TabMode::Analytics;
+                                app.set_status("Switched view tab to: Quota Analytics & Reset Countdowns");
+                            }
+                        }
 
                         KeyCode::Char('h') => {
                             if !app.is_loading {
@@ -1523,6 +1550,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             
                             app.set_status(&format!("✓ Account {} successfully validated and added to database!", new_account.email));
+                            app.trigger_toast(&format!("Account {} added successfully!", new_account.email));
                         }
                         NetworkResult::SwitchComplete { email, keyring_success } => {
                             app.active_email = Some(email.clone());
@@ -1555,6 +1583,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             } else {
                                 app.set_status(&format!("Account changed to {} (keyring write failed, fallback active).", email));
                             }
+                            app.trigger_toast(&format!("Session switched to {}", email));
                         }
                         NetworkResult::QuotaRefreshed { email, quota, project_id } => {
                             // Update in-place — avoid disk read to prevent N/A from race conditions
@@ -1584,6 +1613,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 email, warmup_count, skipped_count
                             );
                             app.set_status(&summary);
+                            app.trigger_toast(&summary);
                             
                             for log in logs {
                                 app.set_status(&log);
@@ -1611,7 +1641,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 AppEvent::NetworkError(err) => {
                     app.is_loading = false;
                     app.cli_cache = load_cli_cache();
-                    app.set_status(&err);
+                    app.set_status(&format!("✗ {}", err));
+                    app.trigger_toast(&format!("Error: {}", err));
                     
                     if let InputMode::AddAccount { email, refresh_token, active_field, .. } = &app.input_mode {
                         app.input_mode = InputMode::AddAccount {

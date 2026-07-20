@@ -397,6 +397,14 @@ impl SortMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabMode {
+    Accounts,
+    Analytics,
+    Logs,
+    Help,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub enum Focus {
     Accounts,

@@ -10,7 +10,7 @@ use ratatui::{
     }
 };
 
-use crate::types::{Focus, InputMode, QuotaData, COOLDOWN_SECONDS, SortMode, LayoutPreset, ConfigOption};
+use crate::types::{Focus, InputMode, QuotaData, COOLDOWN_SECONDS, SortMode, LayoutPreset, ConfigOption, TabMode};
 use crate::tui::App;
 
 pub const SORT_OPTIONS: &[(&str, SortMode, bool)] = &[
@@ -132,26 +132,36 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
     let active_masked = app.active_email.as_deref()
         .map(|e| mask_email(e, app.privacy_mode))
         .unwrap_or_else(|| "None".to_string());
+    let tab_title = match app.active_tab {
+        TabMode::Accounts => " System Control Dashboard [Tab 1: Accounts List] ",
+        TabMode::Analytics => " System Control Dashboard [Tab 2: Quota Analytics & Countdowns] ",
+        TabMode::Logs => " System Control Dashboard [Tab 3: Logger Console] ",
+        TabMode::Help => " System Control Dashboard [Tab 4: Help Guide] ",
+    };
+
     let title = Paragraph::new(format!(
-        " Antigravity Manager TUI | Active: {} | db: {} | 🐉 {} | 🕒 {} | 🟢 Online ",
+        " Antigravity Manager TUI | Active: {} | db: {} | 🐉 {} | 🕒 {} | [Tab] Switch Tab ",
         active_masked, app.db_desc, palette.name, local_time
     ))
-    .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" System Control Dashboard ").style(Style::default().fg(palette.border_active)))
+    .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(tab_title).style(Style::default().fg(palette.border_active)))
     .style(Style::default().fg(palette.fg).add_modifier(Modifier::BOLD));
     f.render_widget(title, chunks[0]);
 
-    let content_chunks = if app.layout_preset.is_full_list() {
-        vec![chunks[1]]
+    if app.active_tab == TabMode::Analytics {
+        draw_analytics_view(f, app, chunks[1]);
     } else {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(60),
-                Constraint::Percentage(40),
-            ])
-            .split(chunks[1])
-            .to_vec()
-    };
+        let content_chunks = if app.layout_preset.is_full_list() {
+            vec![chunks[1]]
+        } else {
+            Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Percentage(60),
+                    Constraint::Percentage(40),
+                ])
+                .split(chunks[1])
+                .to_vec()
+        };
 
     let col_email_text = if app.sort_mode == SortMode::Email {
         format!("Email {}", if app.sort_desc { "▼" } else { "▲" })
@@ -219,7 +229,11 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
         Style::default().fg(palette.border_active).add_modifier(Modifier::BOLD)
     };
 
+    let col_num_text = "#".to_string();
+    let col_num_style = Style::default().fg(palette.border_active).add_modifier(Modifier::BOLD);
+
     let mut header_cells = vec![
+        Cell::from(col_num_text).style(col_num_style),
         Cell::from(col_health_text).style(col_health_style),
         Cell::from(col_email_text).style(col_email_style),
     ];
@@ -469,7 +483,10 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
         ]));
 
         let top_row_style = Style::default().bg(row_bg).fg(if is_active { palette.green_success } else { palette.fg });
+        let num_str = format!("{:>2}", idx + 1);
+        let num_cell = Cell::from(num_str).style(Style::default().fg(palette.border_inactive));
         let mut top_cells = vec![
+            num_cell,
             Cell::from(active_mark).style(Style::default().fg(active_mark_color)),
             email_cell,
         ];
@@ -485,8 +502,9 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
     }
 
     let mut widths = vec![
-        Constraint::Percentage(5),
-        Constraint::Percentage(35),
+        Constraint::Length(3),
+        Constraint::Length(3),
+        Constraint::Percentage(33),
     ];
     if show_gemini {
         widths.push(Constraint::Percentage(15));
@@ -497,18 +515,19 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
         widths.push(Constraint::Percentage(15));
     }
     if !show_gemini || !show_claude {
-        widths[1] = Constraint::Percentage(65);
+        widths[2] = Constraint::Percentage(62);
     }
 
+    let count_info = format!("[{}/{}]", app.get_visible_accounts().len(), app.accounts.len());
     let table_border_color = if app.focused_panel == Focus::Accounts { palette.border_active } else { palette.border_inactive };
     let table_title = if app.is_searching {
-        format!(" Accounts Summary (Sorted by: {}) | 🔍 Find: {}_ ", app.sort_mode.to_str(), app.search_query)
+        format!(" Accounts Summary {} (Sorted by: {}) | 🔍 Find: {}_ ", count_info, app.sort_mode.to_str(), app.search_query)
     } else if !app.search_query.is_empty() {
-        format!(" Accounts Summary (Sorted by: {}) | 🔍 Filter: {} (Esc to Clear) ", app.sort_mode.to_str(), app.search_query)
+        format!(" Accounts Summary {} (Sorted by: {}) | 🔍 Filter: {} (Esc to Clear) ", count_info, app.sort_mode.to_str(), app.search_query)
     } else if app.focused_panel == Focus::Accounts {
-        format!(" Accounts Summary (Active Panel - Sorted by: {}) | [/] Find ", app.sort_mode.to_str())
+        format!(" Accounts Summary {} (Sorted by: {}) | [/] Find ", count_info, app.sort_mode.to_str())
     } else {
-        format!(" Accounts Summary (Sorted by: {}) | [/] Find ", app.sort_mode.to_str())
+        format!(" Accounts Summary {} (Sorted by: {}) | [/] Find ", count_info, app.sort_mode.to_str())
     };
 
     let account_table = Table::new(rows, &widths)
@@ -830,8 +849,29 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
             f.render_widget(fallback, content_chunks[1]);
         }
     }
+    }
 
-
+    // Toast Notification Overlay
+    if let Some((ref msg, created_at, duration_secs)) = app.toast_message {
+        if created_at.elapsed().as_secs() < duration_secs {
+            let toast_text = Paragraph::new(format!(" 🔔 {} ", msg))
+                .block(Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .title(" Toast Notification ")
+                    .style(Style::default().fg(palette.green_success).bg(palette.selection_bg)))
+                .style(Style::default().fg(palette.fg).add_modifier(Modifier::BOLD));
+            
+            let toast_area = Rect {
+                x: chunks[0].x + chunks[0].width.saturating_sub(46),
+                y: chunks[0].y + 2,
+                width: 45.min(chunks[0].width),
+                height: 3,
+            };
+            f.render_widget(Clear, toast_area);
+            f.render_widget(toast_text, toast_area);
+        }
+    }
 
     let loader_prefix = if app.is_loading {
         let spin_chars = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -1400,3 +1440,117 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
         chunks[2].into()
     );
 }
+
+pub fn draw_analytics_view(f: &mut Frame, app: &App, area: Rect) {
+    let palette = app.theme.get_palette();
+    let sub_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(6),
+            Constraint::Min(8),
+        ])
+        .split(area);
+
+    let total = app.accounts.len();
+    let mut healthy = 0;
+    let mut warning = 0;
+    let mut error = 0;
+
+    for acc in &app.accounts {
+        let failures = app.cli_cache.health.get(&acc.email).map(|h| h.consecutive_failures).unwrap_or(0);
+        if failures > 0 {
+            error += 1;
+        } else {
+            let gemini_pct = app.cli_cache.quotas.get(&acc.email)
+                .and_then(|q| q.models.iter().find(|m| m.name.contains("gemini")).map(|m| m.percentage));
+            if let Some(pct) = gemini_pct {
+                if pct < 30 {
+                    warning += 1;
+                } else {
+                    healthy += 1;
+                }
+            } else {
+                healthy += 1;
+            }
+        }
+    }
+
+    let summary_text = vec![
+        Line::from(vec![
+            Span::raw(" Total Accounts: "), Span::styled(format!("{}", total), Style::default().fg(palette.border_active).add_modifier(Modifier::BOLD)),
+            Span::raw(" | Healthy (>30%): "), Span::styled(format!("{}", healthy), Style::default().fg(palette.green_success).add_modifier(Modifier::BOLD)),
+            Span::raw(" | Low Quota (<30%): "), Span::styled(format!("{}", warning), Style::default().fg(palette.yellow_warning).add_modifier(Modifier::BOLD)),
+            Span::raw(" | Failures: "), Span::styled(format!("{}", error), Style::default().fg(palette.red_danger).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(" Quick Actions: ", Style::default().fg(palette.border_active).add_modifier(Modifier::BOLD)),
+            Span::raw(" Press [r] to refresh quotas  |  Press [w] to trigger model warmups  |  Press [Tab] to switch view"),
+        ]),
+    ];
+
+    let summary_block = Paragraph::new(summary_text)
+        .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" 📊 Quota Analytics & Pool Health Overview ").style(Style::default().fg(palette.border_active)));
+    f.render_widget(summary_block, sub_chunks[0]);
+
+    // Reset countdown table
+    let header = Row::new(vec![
+        Cell::from("#").style(Style::default().fg(palette.border_active).add_modifier(Modifier::BOLD)),
+        Cell::from("Account Email").style(Style::default().fg(palette.border_active).add_modifier(Modifier::BOLD)),
+        Cell::from("Model / Bucket").style(Style::default().fg(palette.border_active).add_modifier(Modifier::BOLD)),
+        Cell::from("Usage %").style(Style::default().fg(palette.border_active).add_modifier(Modifier::BOLD)),
+        Cell::from("Reset Countdown").style(Style::default().fg(palette.blue_reset_5h).add_modifier(Modifier::BOLD)),
+        Cell::from("Status").style(Style::default().fg(palette.border_active).add_modifier(Modifier::BOLD)),
+    ]).style(Style::default().bg(palette.selection_bg));
+
+    let mut rows = Vec::new();
+    let mut row_idx = 1;
+    for acc in &app.accounts {
+        if let Some(q) = app.cli_cache.quotas.get(&acc.email) {
+            for m in &q.models {
+                let mut reset_str = "Ready".to_string();
+                if !m.reset_time.is_empty() {
+                    if let Some(cd) = format_countdown(&m.reset_time) {
+                        reset_str = format!("In: {}", cd);
+                    }
+                }
+                
+                let (pct_str, color) = if m.percentage >= 80 {
+                    (format!("{}%", m.percentage), palette.green_success)
+                } else if m.percentage >= 30 {
+                    (format!("{}%", m.percentage), palette.yellow_warning)
+                } else {
+                    (format!("{}%", m.percentage), palette.red_danger)
+                };
+
+                let status_label = if m.percentage < 100 { "Available" } else { "Exhausted" };
+
+                rows.push(Row::new(vec![
+                    Cell::from(format!("{:>2}", row_idx)),
+                    Cell::from(mask_email(&acc.email, app.privacy_mode)),
+                    Cell::from(m.display_name.as_deref().unwrap_or(&m.name)),
+                    Cell::from(pct_str).style(Style::default().fg(color)),
+                    Cell::from(reset_str).style(Style::default().fg(palette.blue_reset_5h)),
+                    Cell::from(status_label).style(Style::default().fg(color)),
+                ]));
+                row_idx += 1;
+            }
+        }
+    }
+
+    let widths = [
+        Constraint::Length(3),
+        Constraint::Percentage(28),
+        Constraint::Percentage(25),
+        Constraint::Percentage(12),
+        Constraint::Percentage(20),
+        Constraint::Percentage(12),
+    ];
+
+    let table = Table::new(rows, &widths)
+        .header(header)
+        .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" 🕒 Quota Reset Countdown Timers ").style(Style::default().fg(palette.border_inactive)));
+
+    f.render_widget(table, sub_chunks[1]);
+}
+

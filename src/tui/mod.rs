@@ -9,7 +9,7 @@ use ratatui::widgets::{TableState, ListState};
 use tokio::sync::mpsc;
 
 use crate::types::{
-    Account, CliCache, InputMode, SortMode, Focus, ThemeType, AppEvent, NetworkResult,
+    Account, CliCache, InputMode, SortMode, Focus, TabMode, ThemeType, AppEvent, NetworkResult,
     QuotaData, COOLDOWN_SECONDS, TokenCache, LayoutPreset
 };
 use crate::config::{get_data_dir, save_cli_cache, load_warmup_history, add_account_to_db, save_warmup_history, record_health_failure, load_monitored_models};
@@ -26,6 +26,8 @@ pub struct App {
     pub active_email: Option<String>,
     pub list_state: TableState,
     pub focused_panel: Focus,
+    pub active_tab: TabMode,
+    pub toast_message: Option<(String, Instant, u64)>,
     pub status_message: String,
     pub status_timestamp: Option<Instant>,
     pub is_loading: bool,
@@ -111,6 +113,8 @@ impl App {
             active_email,
             list_state,
             focused_panel: Focus::Accounts,
+            active_tab: TabMode::Accounts,
+            toast_message: None,
             status_message: "System initialized. Ready.".to_string(),
             status_timestamp: Some(Instant::now()),
             is_loading: false,
@@ -179,6 +183,11 @@ impl App {
         if self.log_history.len() > 1000 {
             self.log_history.remove(0);
         }
+    }
+
+    pub fn trigger_toast(&mut self, msg: &str) {
+        self.toast_message = Some((msg.to_string(), Instant::now(), 4));
+        crate::cli::send_system_notification("Antigravity Manager TUI", msg);
     }
 
     pub fn update_status_decay(&mut self) {
@@ -380,18 +389,20 @@ impl App {
         let rel_x = col_x.saturating_sub(area.x + 1);
         let pct_click = ((rel_x as f32 / inner_width as f32) * 100.0).round() as u32;
         
-        if pct_click < 5 {
+        if pct_click < 4 {
             Some(0)
-        } else if pct_click < 40 {
+        } else if pct_click < 8 {
             Some(1)
-        } else if pct_click < 55 {
+        } else if pct_click < 40 {
             Some(2)
-        } else if pct_click < 70 {
+        } else if pct_click < 55 {
             Some(3)
-        } else if pct_click < 85 {
+        } else if pct_click < 70 {
             Some(4)
-        } else {
+        } else if pct_click < 85 {
             Some(5)
+        } else {
+            Some(6)
         }
     }
 

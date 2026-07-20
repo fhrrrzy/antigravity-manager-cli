@@ -2212,3 +2212,34 @@ fn rpassword_read() -> String {
 
 // Re-export NotifyConfig for use in daemon
 pub use crate::config::NotifyConfig;
+
+/// Send a native system desktop or Android Termux notification
+pub fn send_system_notification(title: &str, message: &str) {
+    // 1. Termux on Android
+    if let Ok(prefix) = std::env::var("PREFIX") {
+        if prefix.contains("termux") {
+            let _ = std::process::Command::new("termux-notification")
+                .args(["--title", title, "--content", message, "--icon", "content_copy"])
+                .output();
+            return;
+        }
+    }
+
+    // 2. Linux desktop
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("notify-send")
+            .args([title, message, "-i", "dialog-information"])
+            .output();
+    }
+
+    // 3. macOS desktop
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!("display notification \"{}\" with title \"{}\"", message, title);
+        let _ = std::process::Command::new("osascript")
+            .args(["-e", &script])
+            .output();
+    }
+}
+
