@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Quick install: curl -fsSL https://raw.githubusercontent.com/fhrrrzy/antigravity-manager-cli/main/install-quick.sh | bash
+# Quick install: curl -fsSL https://raw.githubusercontent.com/fhrrrzy/antigravity-manager-tui/main/install-quick.sh | bash
 
 set -e
 
-echo "🚀 Installing Antigravity Manager CLI (agm)..."
+echo "🚀 Installing Antigravity Manager (agm)..."
+
 
 # Detect OS and architecture
 OS="$(uname -s)"
@@ -39,7 +40,7 @@ else
 fi
 
 # Define download URL
-LATEST_URL="https://github.com/fhrrrzy/antigravity-manager-cli/releases/latest/download"
+LATEST_URL="https://github.com/fhrrrzy/antigravity-manager-tui/releases/latest/download"
 
 # Define destination directory
 if [ -n "$PREFIX" ] && [[ "$PREFIX" == *"/termux"* ]]; then

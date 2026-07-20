@@ -1703,7 +1703,7 @@ pub fn cli_rotate(interval_mins: u64) {
 // agm completions — Shell completion scripts
 // ─────────────────────────────────────────────
 pub fn cli_completions(shell: &str) {
-    let bash = r#"# Antigravity Manager CLI — Bash completions
+    let bash = r#"# Antigravity Manager TUI — Bash completions
 # Add to ~/.bashrc: source <(agm completions bash)
 _agm_completions() {
     local cur prev words cword
@@ -1724,7 +1724,7 @@ complete -F _agm_completions agm
 "#;
 
     let zsh = r#"#compdef agm
-# Antigravity Manager CLI — Zsh completions
+# Antigravity Manager TUI — Zsh completions
 # Add to ~/.zshrc: source <(agm completions zsh)
 _agm() {
     local state
@@ -1765,7 +1765,7 @@ _agm() {
 _agm
 "#;
 
-    let fish = r#"# Antigravity Manager CLI — Fish completions
+    let fish = r#"# Antigravity Manager TUI — Fish completions
 # Add to ~/.config/fish/completions/agm.fish
 complete -c agm -f
 complete -c agm -n '__fish_use_subcommand' -a 'list'         -d 'List configured accounts'
@@ -1858,7 +1858,7 @@ pub async fn cli_notify(action: &str, args: &[String]) {
         }
         "test" => {
             let cfg = load_notify_config();
-            let message = args.first().map(|s| s.as_str()).unwrap_or("🧪 Test notification from Antigravity Manager CLI");
+            let message = args.first().map(|s| s.as_str()).unwrap_or("🧪 Test notification from Antigravity Manager TUI");
             println!("Sending test notification...");
             let sent = send_webhook_notification(&cfg, message).await;
             if sent > 0 {

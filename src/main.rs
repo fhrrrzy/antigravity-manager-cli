@@ -270,7 +270,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  agm notify setup");
                 println!("  agm qr export 1");
                 println!("  agm import-url https://gist.githubusercontent.com/.../accounts.json");
-                println!("\n  Quick install: curl -fsSL https://raw.githubusercontent.com/fhrrrzy/antigravity-manager-cli/main/install-quick.sh | bash");
+                println!("\n  Quick install: curl -fsSL https://raw.githubusercontent.com/fhrrrzy/antigravity-manager-tui/main/install-quick.sh | bash");
             }
             _ => {
                 eprintln!("Unknown command '{}'. Type 'agm --help' for help.", subcommand);

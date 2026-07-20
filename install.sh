@@ -19,14 +19,14 @@ if [ -n "$PREFIX" ] && [ -d "$PREFIX/bin" ]; then
     # Termux environment
     INSTALL_DIR="$PREFIX/bin"
     rm -f "$INSTALL_DIR/agm"
-    cp target/release/antigravity-tui "$INSTALL_DIR/agm"
+    cp target/release/antigravity-manager-tui "$INSTALL_DIR/agm"
     echo "✓ Binary installed to $INSTALL_DIR/agm"
 else
     # Standard Linux/macOS
     INSTALL_DIR="$HOME/.local/bin"
     mkdir -p "$INSTALL_DIR"
     rm -f "$INSTALL_DIR/agm"
-    cp target/release/antigravity-tui "$INSTALL_DIR/agm"
+    cp target/release/antigravity-manager-tui "$INSTALL_DIR/agm"
     echo "✓ Binary installed to $INSTALL_DIR/agm"
 
     # Append path to shell configs

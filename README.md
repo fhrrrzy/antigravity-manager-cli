@@ -1,9 +1,9 @@
-# Antigravity Manager CLI (`agm`)
+# Antigravity Manager TUI (`agm`)
 
-[![Latest Release](https://img.shields.io/github/v/release/fhrrrzy/antigravity-manager-cli?style=flat-square&color=orange)](https://github.com/fhrrrzy/antigravity-manager-cli/releases/latest)
+[![Latest Release](https://img.shields.io/github/v/release/fhrrrzy/antigravity-manager-tui?style=flat-square&color=orange)](https://github.com/fhrrrzy/antigravity-manager-tui/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
 [![Built with Rust](https://img.shields.io/badge/Built%20with-Rust-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
-[![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Android%20(Termux)-brightgreen?style=flat-square)](https://github.com/fhrrrzy/antigravity-manager-cli/releases)
+[![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Android%20(Termux)-brightgreen?style=flat-square)](https://github.com/fhrrrzy/antigravity-manager-tui/releases)
 
 A high-performance command-line utility and terminal user interface (TUI) written in Rust to manage accounts, monitor Google Companion API quotas, and coordinate smart session warmups for the Antigravity system. 
 
@@ -16,10 +16,10 @@ It provides seamless integration for developer workflows, supporting both an int
 ## Quick Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/fhrrrzy/antigravity-manager-cli/main/install-quick.sh | bash
+curl -fsSL https://raw.githubusercontent.com/fhrrrzy/antigravity-manager-tui/main/install-quick.sh | bash
 ```
 
-Or download a pre-built binary directly from the [latest release](https://github.com/fhrrrzy/antigravity-manager-cli/releases/latest).
+Or download a pre-built binary directly from the [latest release](https://github.com/fhrrrzy/antigravity-manager-tui/releases/latest).
 
 ---
 
@@ -74,8 +74,8 @@ pkg update && pkg install git rust clang -y
 
 1. **Clone the Repository**:
    ```bash
-   git clone git@github.com:fhrrrzy/antigravity-manager-cli.git ~/antigravity-manager-cli
-   cd ~/antigravity-manager-cli
+   git clone git@github.com:fhrrrzy/antigravity-manager-tui.git ~/antigravity-manager-tui
+   cd ~/antigravity-manager-tui
    ```
 
 2. **Run the Installer**:

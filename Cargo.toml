@@ -1,5 +1,5 @@
 [package]
-name = "antigravity-tui"
+name = "antigravity-manager-tui"
 version = "1.4.0"
 edition = "2021"
 
